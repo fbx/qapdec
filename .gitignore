@@ -1,0 +1,6 @@
+*.o
+.*.o.d
+/qapdec
+/version.h
+/.git-version
+/.git-commitdate
