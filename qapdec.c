@@ -28,6 +28,8 @@
 #define av_err(errnum, fmt, ...) \
 	err(fmt ": %s", ##__VA_ARGS__, av_err2str(errnum))
 
+#define ARRAY_SIZE(x)	(sizeof (x) / sizeof (*(x)))
+
 #ifndef QAP_LIB_M8
 # define QAP_LIB_M8 "libdts_m8_wrapper.so"
 #endif
@@ -48,11 +50,37 @@ qap_module_handle_t qap_module;
 bool wrote_wav_header;
 int debug_level = 1;
 
-struct wav_header {
+static int wav_channel_count;
+static int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
+static int wav_block_size;
+
+#define WAV_SPEAKER_FRONT_LEFT			0x1
+#define WAV_SPEAKER_FRONT_RIGHT			0x2
+#define WAV_SPEAKER_FRONT_CENTER		0x4
+#define WAV_SPEAKER_LOW_FREQUENCY		0x8
+#define WAV_SPEAKER_BACK_LEFT			0x10
+#define WAV_SPEAKER_BACK_RIGHT			0x20
+#define WAV_SPEAKER_FRONT_LEFT_OF_CENTER	0x40
+#define WAV_SPEAKER_FRONT_RIGHT_OF_CENTER	0x80
+#define WAV_SPEAKER_BACK_CENTER			0x100
+#define WAV_SPEAKER_SIDE_LEFT			0x200
+#define WAV_SPEAKER_SIDE_RIGHT			0x400
+#define WAV_SPEAKER_TOP_CENTER			0x800
+#define WAV_SPEAKER_TOP_FRONT_LEFT		0x1000
+#define WAV_SPEAKER_TOP_FRONT_CENTER		0x2000
+#define WAV_SPEAKER_TOP_FRONT_RIGHT		0x4000
+#define WAV_SPEAKER_TOP_BACK_LEFT		0x8000
+#define WAV_SPEAKER_TOP_BACK_CENTER		0x10000
+#define WAV_SPEAKER_TOP_BACK_RIGHT		0x20000
+#define WAV_SPEAKER_INVALID			0
+
+#define packed_struct struct __attribute__((packed))
+
+packed_struct wav_header {
 	uint8_t			riff_magic[4];
 	uint32_t		riff_chunk_size;
 	uint8_t			wave_magic[4];
-	struct {
+	packed_struct {
 		uint8_t		chunk_label[4];
 		uint32_t	chunk_size;
 		uint16_t	audio_format;
@@ -61,30 +89,87 @@ struct wav_header {
 		uint32_t	byte_rate;
 		uint16_t	block_align;
 		uint16_t	bits_per_sample;
+		uint16_t	cb_size;
+		packed_struct {
+			uint16_t	valid_bits_per_sample;
+			uint32_t	channel_mask;
+			uint8_t		sub_format[16];
+		} ext;
 	} fmt;
-	struct {
+	packed_struct {
 		uint8_t		chunk_label[4];
 		uint32_t	chunk_size;
 	} data;
 };
 
+static struct {
+	uint32_t wav_channel;
+	uint8_t qap_channel;
+} wav_channel_table[] = {
+	/* keep in order of wav channels in pcm sample */
+	{ WAV_SPEAKER_FRONT_LEFT, QAP_AUDIO_PCM_CHANNEL_L },
+	{ WAV_SPEAKER_FRONT_RIGHT, QAP_AUDIO_PCM_CHANNEL_R },
+	{ WAV_SPEAKER_FRONT_CENTER, QAP_AUDIO_PCM_CHANNEL_C },
+	{ WAV_SPEAKER_LOW_FREQUENCY, QAP_AUDIO_PCM_CHANNEL_LFE },
+	{ WAV_SPEAKER_BACK_LEFT, QAP_AUDIO_PCM_CHANNEL_LS },
+	{ WAV_SPEAKER_BACK_RIGHT, QAP_AUDIO_PCM_CHANNEL_RS },
+	{ WAV_SPEAKER_FRONT_LEFT_OF_CENTER, QAP_AUDIO_PCM_CHANNEL_FLC },
+	{ WAV_SPEAKER_FRONT_RIGHT_OF_CENTER, QAP_AUDIO_PCM_CHANNEL_FRC },
+	{ WAV_SPEAKER_BACK_CENTER, QAP_AUDIO_PCM_CHANNEL_CS },
+	{ WAV_SPEAKER_SIDE_LEFT, QAP_AUDIO_PCM_CHANNEL_SL },
+	{ WAV_SPEAKER_SIDE_RIGHT, QAP_AUDIO_PCM_CHANNEL_SR },
+	{ WAV_SPEAKER_TOP_CENTER, QAP_AUDIO_PCM_CHANNEL_TC },
+	{ WAV_SPEAKER_TOP_FRONT_LEFT, QAP_AUDIO_PCM_CHANNEL_TFL },
+	{ WAV_SPEAKER_TOP_FRONT_CENTER, QAP_AUDIO_PCM_CHANNEL_TFC },
+	{ WAV_SPEAKER_TOP_FRONT_RIGHT, QAP_AUDIO_PCM_CHANNEL_TFR },
+	{ WAV_SPEAKER_TOP_BACK_LEFT, QAP_AUDIO_PCM_CHANNEL_TBL },
+	{ WAV_SPEAKER_TOP_BACK_CENTER, QAP_AUDIO_PCM_CHANNEL_TBC },
+	{ WAV_SPEAKER_TOP_BACK_RIGHT, QAP_AUDIO_PCM_CHANNEL_TBR },
+};
+
 static int write_header(FILE *out, qap_output_config_t *cfg)
 {
 	struct wav_header hdr;
+	uint32_t channel_mask = 0;
+
+	for (unsigned i = 0; i < ARRAY_SIZE(wav_channel_table); i++) {
+		uint8_t qap_ch = wav_channel_table[i].qap_channel;
+		uint32_t wav_ch = wav_channel_table[i].wav_channel;
+
+		for (int pos = 0; pos < cfg->channels; pos++) {
+			if (cfg->ch_map[pos] == qap_ch) {
+				wav_channel_offset[wav_channel_count++] =
+					pos * cfg->bit_width / 8;
+				channel_mask |= wav_ch;
+			}
+		}
+	}
+
+	if (wav_channel_count != cfg->channels) {
+		fprintf(stderr, "dropping %d channels from output",
+			cfg->channels - wav_channel_count);
+	}
 
 	memcpy(&hdr.riff_magic, "RIFF", 4);
 	hdr.riff_chunk_size = 0xffffffff;
 	memcpy(&hdr.wave_magic, "WAVE", 4);
 
 	memcpy(&hdr.fmt.chunk_label, "fmt ", 4);
-	hdr.fmt.chunk_size = 16;
-	hdr.fmt.audio_format = 1;
-	hdr.fmt.num_channels = cfg->channels;
+	hdr.fmt.chunk_size = sizeof (hdr.fmt) - 8;
+	hdr.fmt.audio_format = 0xfffe; // WAVE_FORMAT_EXTENSIBLE
+	hdr.fmt.num_channels = wav_channel_count;
 	hdr.fmt.sample_rate = cfg->sample_rate;
-	hdr.fmt.byte_rate = cfg->sample_rate * cfg->channels *
+	hdr.fmt.byte_rate = cfg->sample_rate * wav_channel_count *
 		cfg->bit_width / 8;
-	hdr.fmt.block_align = cfg->channels * cfg->bit_width / 8;
+	hdr.fmt.block_align = wav_channel_count * cfg->bit_width / 8;
 	hdr.fmt.bits_per_sample = cfg->bit_width;
+
+	hdr.fmt.cb_size = sizeof (hdr.fmt.ext);
+	hdr.fmt.ext.valid_bits_per_sample = cfg->bit_width;
+	hdr.fmt.ext.channel_mask = channel_mask;
+	memcpy(&hdr.fmt.ext.sub_format,
+	       "\x01\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xAA\x00\x38\x9B\x71",
+	       16);
 
 	memcpy(&hdr.data.chunk_label, "data", 4);
 	hdr.data.chunk_size = 0xffffffff;
@@ -94,14 +179,32 @@ static int write_header(FILE *out, qap_output_config_t *cfg)
 		return -1;
 	}
 
+	wav_block_size = hdr.fmt.block_align;
+
 	return 0;
 }
 
 static int write_buffer(FILE *out, qap_buffer_common_t *buffer)
 {
-	return fwrite(buffer->data + buffer->offset,
-		      buffer->size - buffer->offset, 1,
-		      out);
+	const uint8_t *src;
+	int sample_size;
+	int n_blocks;
+
+	src = buffer->data;
+
+	assert(buffer->size % wav_block_size == 0);
+	n_blocks = buffer->size / wav_block_size;
+	sample_size = wav_block_size / wav_channel_count;
+
+	for (int i = 0; i < n_blocks; i++) {
+		for (int ch = 0; ch < wav_channel_count; ch++) {
+			fwrite(src + wav_channel_offset[ch],
+			       sample_size, 1, out);
+		}
+		src += wav_block_size;
+	}
+
+	return 0;
 }
 
 static void handle_buffer(qap_audio_buffer_t *buffer)
@@ -232,6 +335,7 @@ int main(int argc, char **argv)
 	int ret;
 	int stream_index = -1;
 	const char *qap_lib_name;
+	size_t written = 0;
 	qap_audio_format_t qap_format;
 	qap_module_config_t qap_mod_cfg;
 	qap_session_outputs_config_t qap_session_cfg;
@@ -344,6 +448,7 @@ int main(int argc, char **argv)
 	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
 	qap_session_cfg.num_output = 1;
 	qap_session_cfg.output_config[0].id = AUDIO_OUTPUT_ID;
+	qap_session_cfg.output_config[0].channels = 6;
 
 	ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_OUTPUTS,
 			      sizeof (qap_session_cfg), &qap_session_cfg,
@@ -413,11 +518,15 @@ int main(int argc, char **argv)
 			}
 		}
 
+		written += pkt.size;
+
 		av_packet_unref(&pkt);
 	}
 
 	qap_module_cmd(qap_module, QAP_MODULE_CMD_FLUSH, 0, NULL, NULL, NULL);
 	qap_module_cmd(qap_module, QAP_MODULE_CMD_STOP, 0, NULL, NULL, NULL);
+
+	info("written %zu bytes", written);
 
 	if (qap_session_close(qap_session))
 		err("qap: failed to close session");
