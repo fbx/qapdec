@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <unistd.h>
 #include <assert.h>
+#include <sys/eventfd.h>
 
 #include <dolby_ms12.h>
 #include <dts_m8.h>
@@ -53,6 +54,8 @@ int debug_level = 1;
 static int wav_channel_count;
 static int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
 static int wav_block_size;
+
+static int eos_eventfd = -1;
 
 #define WAV_SPEAKER_FRONT_LEFT			0x1
 #define WAV_SPEAKER_FRONT_RIGHT			0x2
@@ -245,6 +248,10 @@ static void handle_qap_session_event(qap_session_handle_t session,
 		break;
 	case QAP_CALLBACK_EVENT_EOS:
 		info("qap: EOS for primary");
+		if (eos_eventfd != -1) {
+			uint64_t v = 1;
+			write(eos_eventfd, &v, sizeof v);
+		}
 		break;
 	case QAP_CALLBACK_EVENT_MAIN_2_EOS:
 		info("qap: EOS for secondary");
@@ -465,6 +472,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	eos_eventfd = eventfd(0, EFD_CLOEXEC);
+
 	av_init_packet(&pkt);
 
 	while (1) {
@@ -473,7 +482,6 @@ int main(int argc, char **argv)
 
 		ret = av_read_frame(avctx, &pkt);
 		if (ret == AVERROR_EOF) {
-			dbg(" in: EOF");
 			break;
 		}
 
@@ -523,8 +531,22 @@ int main(int argc, char **argv)
 		av_packet_unref(&pkt);
 	}
 
-	qap_module_cmd(qap_module, QAP_MODULE_CMD_FLUSH, 0, NULL, NULL, NULL);
-	qap_module_cmd(qap_module, QAP_MODULE_CMD_STOP, 0, NULL, NULL, NULL);
+	memset(&qap_buffer, 0, sizeof (qap_buffer));
+	qap_buffer.buffer_parms.input_buf_params.flags = QAP_BUFFER_EOS;
+	qap_module_process(qap_module, &qap_buffer);
+
+	ret = qap_module_cmd(qap_module, QAP_MODULE_CMD_STOP,
+			     0, NULL, NULL, NULL);
+	if (ret) {
+		err("qap: QAP_MODULE_CMD_STOP command failed");
+		return 1;
+	}
+
+	// wait eos
+	if (eos_eventfd != -1) {
+		uint64_t v;
+		read(eos_eventfd, &v, sizeof v);
+	}
 
 	info("written %zu bytes", written);
 
