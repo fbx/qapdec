@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <unistd.h>
 #include <assert.h>
+#include <signal.h>
 #include <pthread.h>
 
 #include <dolby_ms12.h>
@@ -50,6 +51,7 @@ qap_module_handle_t qap_module;
 
 bool wrote_wav_header;
 int debug_level = 1;
+volatile bool quit;
 
 static int wav_channel_count;
 static int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
@@ -333,6 +335,11 @@ static void usage(void)
 		"\n");
 }
 
+static void handle_quit(int sig)
+{
+	quit = true;
+}
+
 int main(int argc, char **argv)
 {
 	const char *url;
@@ -485,7 +492,10 @@ int main(int argc, char **argv)
 
 	av_init_packet(&pkt);
 
-	while (1) {
+	signal(SIGINT, handle_quit);
+	signal(SIGTERM, handle_quit);
+
+	while (!quit) {
 		AVRational av_timebase = avstream->time_base;
 		AVRational qap_timebase = { 1, 1000000 };
 
