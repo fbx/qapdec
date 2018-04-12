@@ -327,8 +327,9 @@ static void usage(void)
 {
 	fprintf(stderr, "usage: qapdec [OPTS] <input>\n"
 		"Where OPTS is a combination of:\n"
-		"  -s         audio stream number\n"
-		"  -v         increase debug verbosity\n"
+		"  -s             audio stream number\n"
+		"  -v             increase debug verbosity\n"
+		"  -k <kvpairs>   pass kvpairs string to the decoder backend\n"
 		"\n");
 }
 
@@ -338,6 +339,7 @@ int main(int argc, char **argv)
 	int opt;
 	int ret;
 	int stream_index = -1;
+	char *kvpairs = NULL;
 	const char *qap_lib_name;
 	size_t written = 0;
 	qap_audio_format_t qap_format;
@@ -346,10 +348,13 @@ int main(int argc, char **argv)
 	qap_audio_buffer_t qap_buffer;
 	AVPacket pkt;
 
-	while ((opt = getopt(argc, argv, "hs:v")) != -1) {
+	while ((opt = getopt(argc, argv, "hk:s:v")) != -1) {
 		switch (opt) {
 		case 'v':
 			debug_level++;
+			break;
+		case 'k':
+			kvpairs = optarg;
 			break;
 		case 's':
 			stream_index = atoi(optarg);
@@ -460,6 +465,15 @@ int main(int argc, char **argv)
 	if (ret) {
 		err("qap: QAP_SESSION_CMD_SET_CONFIG command failed");
 		return 1;
+	}
+
+	if (kvpairs) {
+		ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_KVPAIRS,
+				      strlen(kvpairs) + 1, kvpairs, NULL, NULL);
+		if (ret) {
+			err("qap: QAP_SESSION_CMD_SET_KVPAIRS command failed");
+			return 1;
+		}
 	}
 
 	ret = qap_module_cmd(qap_module, QAP_MODULE_CMD_START,
