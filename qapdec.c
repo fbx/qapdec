@@ -230,9 +230,14 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 
 static void handle_output_config(qap_output_config_t *cfg)
 {
-	info("qap: output config: channels=%d sr=%d ss=%d interleaved=%d",
-	     cfg->channels, cfg->sample_rate, cfg->bit_width,
+	info("qap: output config: id=0x%x channels=%d sr=%d ss=%d interleaved=%d",
+	     cfg->id, cfg->channels, cfg->sample_rate, cfg->bit_width,
 	     cfg->is_interleaved);
+
+	if (!cfg->sample_rate) {
+		err("null sample rate, default to 48000");
+		cfg->sample_rate = 48000;
+	}
 
 	if (!wrote_wav_header) {
 		write_header(output_stream, cfg);
