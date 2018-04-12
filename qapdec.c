@@ -339,7 +339,7 @@ static void usage(void)
 {
 	fprintf(stderr, "usage: qapdec [OPTS] <input>\n"
 		"Where OPTS is a combination of:\n"
-		"  -s             audio stream number\n"
+		"  -s <stream>    audio stream number to decode\n"
 		"  -o <filename>  output data to file instead of stdout\n"
 		"  -v             increase debug verbosity\n"
 		"  -k <kvpairs>   pass kvpairs string to the decoder backend\n"
