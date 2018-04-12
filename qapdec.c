@@ -3,7 +3,7 @@
 #include <inttypes.h>
 #include <unistd.h>
 #include <assert.h>
-#include <sys/eventfd.h>
+#include <pthread.h>
 
 #include <dolby_ms12.h>
 #include <dts_m8.h>
@@ -55,7 +55,10 @@ static int wav_channel_count;
 static int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
 static int wav_block_size;
 
-static int eos_eventfd = -1;
+static pthread_mutex_t qap_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
+static bool qap_eos_received;
+static bool qap_data_avail;
 
 #define WAV_SPEAKER_FRONT_LEFT			0x1
 #define WAV_SPEAKER_FRONT_RIGHT			0x2
@@ -233,8 +236,8 @@ static void handle_output_config(qap_output_config_t *cfg)
 	}
 }
 
-static void handle_qap_session_event(qap_session_handle_t session,
-				     void *priv, qap_callback_event_t event_id,
+static void handle_qap_session_event(qap_session_handle_t session, void *priv,
+				     qap_callback_event_t event_id,
 				     int size, void *data)
 {
 	switch (event_id) {
@@ -248,10 +251,10 @@ static void handle_qap_session_event(qap_session_handle_t session,
 		break;
 	case QAP_CALLBACK_EVENT_EOS:
 		info("qap: EOS for primary");
-		if (eos_eventfd != -1) {
-			uint64_t v = 1;
-			write(eos_eventfd, &v, sizeof v);
-		}
+		pthread_mutex_lock(&qap_lock);
+		qap_eos_received = true;
+		pthread_cond_signal(&qap_cond);
+		pthread_mutex_unlock(&qap_lock);
 		break;
 	case QAP_CALLBACK_EVENT_MAIN_2_EOS:
 		info("qap: EOS for secondary");
@@ -274,41 +277,35 @@ static void handle_qap_session_event(qap_session_handle_t session,
 	}
 }
 
-static void handle_qap_module_event(qap_session_handle_t session,
-				     void *priv, qap_callback_event_t event_id,
-				     int size, void *data)
+static void handle_qap_module_event(qap_module_handle_t module, void *priv,
+				    qap_module_callback_event_t event_id,
+				    int size, void *data)
 {
-	info("QAP module event %u", event_id);
+	switch (event_id) {
+	case QAP_MODULE_CALLBACK_EVENT_SEND_INPUT_BUFFER:
+		if (size == sizeof (qap_send_buffer_t)) {
+			qap_send_buffer_t *buf = data;
+			dbg("qap: %u bytes avail", buf->bytes_available);
+		}
+		pthread_mutex_lock(&qap_lock);
+		qap_data_avail = true;
+		pthread_cond_signal(&qap_cond);
+		pthread_mutex_unlock(&qap_lock);
+		break;
+	default:
+		err("unknown QAP module event %u", event_id);
+		break;
+	}
 }
 
 static int wait_buffer_available(qap_module_handle_t module)
 {
-	char reply[100];
-	unsigned int reply_size;
-	const char *p;
-	int avail;
+	pthread_mutex_lock(&qap_lock);
+	while (!qap_data_avail)
+		pthread_cond_wait(&qap_cond, &qap_lock);
+	pthread_mutex_unlock(&qap_lock);
 
-	do {
-		usleep(100);
-
-		reply_size = sizeof (reply);
-
-		if (qap_module_cmd(qap_module, QAP_MODULE_CMD_GET_PARAM,
-				   sizeof (QAP_MODULE_CMD_GET_PARAM),
-				   (void *)"buf_available",
-				   &reply_size, reply)) {
-			err("QAP_MODULE_CMD_GET_PARAM/buf_available failed");
-			return -1;
-		}
-
-		p = strchr(reply, '=');
-		if (!p)
-			return -1;
-
-		avail = atoi(p + 1);
-	} while (avail <= 0);
-
-	return avail;
+	return 0;
 }
 
 static int get_av_log_level(void)
@@ -435,7 +432,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	qap_session_set_callback(qap_session, handle_qap_session_event);
+	qap_session_set_callback(qap_session, handle_qap_session_event, NULL);
 
 	memset(&qap_mod_cfg, 0, sizeof (qap_mod_cfg));
 	qap_mod_cfg.module_type = QAP_MODULE_DECODER;
@@ -447,7 +444,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (qap_module_set_callback(qap_module, handle_qap_module_event)) {
+	if (qap_module_set_callback(qap_module, handle_qap_module_event, NULL)) {
 		err("qap: failed to set module callback");
 		return 1;
 	}
@@ -461,7 +458,7 @@ int main(int argc, char **argv)
 			      sizeof (qap_session_cfg), &qap_session_cfg,
 			      NULL, NULL);
 	if (ret) {
-		err("qap: QAP_SESSION_CMD_SET_OUTPUTS command failed");
+		err("qap: QAP_SESSION_CMD_SET_CONFIG command failed");
 		return 1;
 	}
 
@@ -471,8 +468,6 @@ int main(int argc, char **argv)
 		err("qap: QAP_SESSION_CMD_START command failed");
 		return 1;
 	}
-
-	eos_eventfd = eventfd(0, EFD_CLOEXEC);
 
 	av_init_packet(&pkt);
 
@@ -543,10 +538,10 @@ int main(int argc, char **argv)
 	}
 
 	// wait eos
-	if (eos_eventfd != -1) {
-		uint64_t v;
-		read(eos_eventfd, &v, sizeof v);
-	}
+	pthread_mutex_lock(&qap_lock);
+	while (!qap_eos_received)
+		pthread_cond_wait(&qap_cond, &qap_lock);
+	pthread_mutex_unlock(&qap_lock);
 
 	info("written %zu bytes", written);
 
