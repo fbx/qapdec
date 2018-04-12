@@ -246,11 +246,19 @@ static void handle_qap_session_event(qap_session_handle_t session, void *priv,
 {
 	switch (event_id) {
 	case QAP_CALLBACK_EVENT_DATA:
-		assert(size == sizeof (qap_audio_buffer_t));
+		if (size != sizeof (qap_audio_buffer_t)) {
+			err("QAP_CALLBACK_EVENT_DATA "
+			    "size=%d expected=%zu", size,
+			    sizeof (qap_audio_buffer_t));
+		}
 		handle_buffer((qap_audio_buffer_t *)data);
 		break;
 	case QAP_CALLBACK_EVENT_OUTPUT_CFG_CHANGE:
-		assert(size == sizeof (qap_audio_buffer_t));
+		if (size != sizeof (qap_audio_buffer_t)) {
+			err("QAP_CALLBACK_EVENT_OUTPUT_CFG_CHANGE "
+			    "size=%d expected=%zu", size,
+			    sizeof (qap_audio_buffer_t));
+		}
 		handle_output_config(&((qap_audio_buffer_t *)data)->buffer_parms.output_buf_params.output_config);
 		break;
 	case QAP_CALLBACK_EVENT_EOS:
@@ -552,6 +560,9 @@ int main(int argc, char **argv)
 			if (ret < 0) {
 				if (wait_buffer_available(qap_module) < 0)
 					return 1;
+			} else if (ret == 0) {
+				err("decoder returned zero size");
+				return 1;
 			} else {
 				qap_buffer.common_params.offset += ret;
 				dbg("dec: written %d bytes", ret);
