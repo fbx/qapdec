@@ -342,6 +342,7 @@ static void usage(void)
 		"  -s <stream>    audio stream number to decode\n"
 		"  -o <filename>  output data to file instead of stdout\n"
 		"  -v             increase debug verbosity\n"
+		"  -c <channels>  maximum number of channels to output\n"
 		"  -k <kvpairs>   pass kvpairs string to the decoder backend\n"
 		"\n");
 }
@@ -357,6 +358,7 @@ int main(int argc, char **argv)
 	int opt;
 	int ret;
 	int stream_index = -1;
+	int max_channels = 8;
 	char *kvpairs = NULL;
 	const char *qap_lib_name;
 	size_t written = 0;
@@ -368,8 +370,16 @@ int main(int argc, char **argv)
 
 	output_stream = stdout;
 
-	while ((opt = getopt(argc, argv, "hk:o:s:v")) != -1) {
+	while ((opt = getopt(argc, argv, "c:hk:o:s:v")) != -1) {
 		switch (opt) {
+		case 'c':
+			max_channels = atoi(optarg);
+			if (max_channels <= 0 || max_channels > 8) {
+				err("invalid number of channels %s", optarg);
+				usage();
+				return 1;
+			}
+			break;
 		case 'v':
 			debug_level++;
 			break;
@@ -485,7 +495,7 @@ int main(int argc, char **argv)
 	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
 	qap_session_cfg.num_output = 1;
 	qap_session_cfg.output_config[0].id = AUDIO_OUTPUT_ID;
-	qap_session_cfg.output_config[0].channels = 6;
+	qap_session_cfg.output_config[0].channels = max_channels;
 
 	ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_OUTPUTS,
 			      sizeof (qap_session_cfg), &qap_session_cfg,
