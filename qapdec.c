@@ -62,6 +62,8 @@ static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
 static bool qap_eos_received;
 static bool qap_data_avail;
 
+static FILE *output_stream;
+
 #define WAV_SPEAKER_FRONT_LEFT			0x1
 #define WAV_SPEAKER_FRONT_RIGHT			0x2
 #define WAV_SPEAKER_FRONT_CENTER		0x4
@@ -223,7 +225,7 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	assert(buffer->buffer_parms.output_buf_params.output_id == AUDIO_OUTPUT_ID);
 	assert(wrote_wav_header);
 
-	write_buffer(stdout, &buffer->common_params);
+	write_buffer(output_stream, &buffer->common_params);
 }
 
 static void handle_output_config(qap_output_config_t *cfg)
@@ -233,7 +235,7 @@ static void handle_output_config(qap_output_config_t *cfg)
 	     cfg->is_interleaved);
 
 	if (!wrote_wav_header) {
-		write_header(stdout, cfg);
+		write_header(output_stream, cfg);
 		wrote_wav_header = true;
 	}
 }
@@ -330,6 +332,7 @@ static void usage(void)
 	fprintf(stderr, "usage: qapdec [OPTS] <input>\n"
 		"Where OPTS is a combination of:\n"
 		"  -s             audio stream number\n"
+		"  -o <filename>  output data to file instead of stdout\n"
 		"  -v             increase debug verbosity\n"
 		"  -k <kvpairs>   pass kvpairs string to the decoder backend\n"
 		"\n");
@@ -355,7 +358,9 @@ int main(int argc, char **argv)
 	qap_audio_buffer_t qap_buffer;
 	AVPacket pkt;
 
-	while ((opt = getopt(argc, argv, "hk:s:v")) != -1) {
+	output_stream = stdout;
+
+	while ((opt = getopt(argc, argv, "hk:o:s:v")) != -1) {
 		switch (opt) {
 		case 'v':
 			debug_level++;
@@ -365,6 +370,14 @@ int main(int argc, char **argv)
 			break;
 		case 's':
 			stream_index = atoi(optarg);
+			break;
+		case 'o':
+			output_stream = fopen(optarg, "w");
+			if (!output_stream) {
+				err("cannot open file `%s' for writing: %m",
+				    optarg);
+				return 1;
+			}
 			break;
 		case 'h':
 			usage();
@@ -574,6 +587,9 @@ int main(int argc, char **argv)
 
 	if (qap_unload_library(qap_lib))
 		err("qap: failed to unload library");
+
+	if (output_stream != stdout)
+		fclose(output_stream);
 
 	return 0;
 }
