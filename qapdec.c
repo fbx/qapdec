@@ -399,7 +399,11 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 {
 	switch (event_id) {
 	case QAP_MODULE_CALLBACK_EVENT_SEND_INPUT_BUFFER:
-		if (size == sizeof (qap_send_buffer_t)) {
+		if (size != sizeof (qap_send_buffer_t)) {
+			err("QAP_MODULE_CALLBACK_EVENT_SEND_INPUT_BUFFER "
+			    "size=%d expected=%zu", size,
+			    sizeof (qap_send_buffer_t));
+		} else {
 			qap_send_buffer_t *buf = data;
 			dbg("qap: %u bytes avail", buf->bytes_available);
 		}
