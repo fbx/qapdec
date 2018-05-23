@@ -32,12 +32,12 @@
 
 #define ARRAY_SIZE(x)	(sizeof (x) / sizeof (*(x)))
 
-#ifndef QAP_LIB_M8
-# define QAP_LIB_M8 "libdts_m8_wrapper.so"
+#ifndef QAP_LIB_DTS_M8
+# define QAP_LIB_DTS_M8 "libdts_m8_wrapper.so"
 #endif
 
-#ifndef QAP_LIB_MS12
-# define QAP_LIB_MS12 "libdolby_ms12_wrapper.so"
+#ifndef QAP_LIB_DOLBY_MS12
+# define QAP_LIB_DOLBY_MS12 "/usr/lib64/libdolby_ms12_wrapper_prod.so"
 #endif
 
 #define AUDIO_OUTPUT_ID 0
@@ -451,15 +451,15 @@ int main(int argc, char **argv)
 
 	switch (avstream->codecpar->codec_id) {
 	case AV_CODEC_ID_AC3:
-		qap_lib_name = QAP_LIB_MS12;
+		qap_lib_name = QAP_LIB_DOLBY_MS12;
 		qap_format = QAP_AUDIO_FORMAT_AC3;
 		break;
 	case AV_CODEC_ID_EAC3:
-		qap_lib_name = QAP_LIB_MS12;
+		qap_lib_name = QAP_LIB_DOLBY_MS12;
 		qap_format = QAP_AUDIO_FORMAT_EAC3;
 		break;
 	case AV_CODEC_ID_DTS:
-		qap_lib_name = QAP_LIB_M8;
+		qap_lib_name = QAP_LIB_DTS_M8;
 		qap_format = QAP_AUDIO_FORMAT_DTS;
 		break;
 	default:
