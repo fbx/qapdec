@@ -63,6 +63,7 @@ static pthread_mutex_t qap_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
 static bool qap_eos_received;
 static bool qap_data_avail;
+static int qap_input_sample_rate;
 
 static FILE *output_stream;
 
@@ -325,8 +326,8 @@ static void handle_output_config(qap_output_buff_params_t *out_buffer)
 	     cfg->channels, audio_chmap_to_str(cfg->channels, cfg->ch_map));
 
 	if (!cfg->sample_rate) {
-		err("null sample rate, default to 48000");
-		cfg->sample_rate = 48000;
+		assert(qap_input_sample_rate != 0);
+		cfg->sample_rate = qap_input_sample_rate;
 	}
 
 	if (!wrote_wav_header) {
@@ -384,6 +385,14 @@ static void handle_qap_session_event(qap_session_handle_t session, void *priv,
 	}
 }
 
+static void handle_input_config(qap_input_config_t *cfg)
+{
+	info("qap: input stream format sr=%u ss=%u channels=%u",
+	     cfg->sample_rate, cfg->bit_width, cfg->channels);
+
+	qap_input_sample_rate = cfg->sample_rate;
+}
+
 static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 				    qap_module_callback_event_t event_id,
 				    int size, void *data)
@@ -398,6 +407,14 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 		qap_data_avail = true;
 		pthread_cond_signal(&qap_cond);
 		pthread_mutex_unlock(&qap_lock);
+		break;
+	case QAP_MODULE_CALLBACK_EVENT_INPUT_CFG_CHANGE:
+		if (size != sizeof (qap_input_config_t)) {
+			err("QAP_MODULE_CALLBACK_EVENT_INPUT_CFG_CHANGE "
+			    "size=%d expected=%zu", size,
+			    sizeof (qap_input_config_t));
+		}
+		handle_input_config((qap_input_config_t *)data);
 		break;
 	default:
 		err("unknown QAP module event %u", event_id);
