@@ -30,6 +30,8 @@
 #define av_err(errnum, fmt, ...) \
 	err(fmt ": %s", ##__VA_ARGS__, av_err2str(errnum))
 
+#define CASESTR(ENUM) case ENUM: return #ENUM;
+
 #define ARRAY_SIZE(x)	(sizeof (x) / sizeof (*(x)))
 
 #ifndef QAP_LIB_DTS_M8
@@ -40,7 +42,7 @@
 # define QAP_LIB_DOLBY_MS12 "/usr/lib64/libdolby_ms12_wrapper_prod.so"
 #endif
 
-#define AUDIO_OUTPUT_ID 0
+#define AUDIO_OUTPUT_ID 0x666
 
 static AVFormatContext *avctx;
 static AVStream *avstream;
@@ -217,6 +219,89 @@ static int write_buffer(FILE *out, qap_buffer_common_t *buffer)
 	return 0;
 }
 
+static const char *audio_format_to_str(qap_audio_format_t format)
+{
+	switch (format) {
+	CASESTR(QAP_AUDIO_FORMAT_PCM_16_BIT)
+	CASESTR(QAP_AUDIO_FORMAT_PCM_8_24_BIT)
+	CASESTR(QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED)
+	CASESTR(QAP_AUDIO_FORMAT_PCM_32_BIT)
+	CASESTR(QAP_AUDIO_FORMAT_AC3)
+	CASESTR(QAP_AUDIO_FORMAT_AC4)
+	CASESTR(QAP_AUDIO_FORMAT_EAC3)
+	CASESTR(QAP_AUDIO_FORMAT_AAC)
+	CASESTR(QAP_AUDIO_FORMAT_AAC_ADTS)
+	CASESTR(QAP_AUDIO_FORMAT_MP2)
+	CASESTR(QAP_AUDIO_FORMAT_MP3)
+	CASESTR(QAP_AUDIO_FORMAT_FLAC)
+	CASESTR(QAP_AUDIO_FORMAT_ALAC)
+	CASESTR(QAP_AUDIO_FORMAT_APE)
+	CASESTR(QAP_AUDIO_FORMAT_DTS)
+	CASESTR(QAP_AUDIO_FORMAT_DTS_HD)
+	}
+	return "unknown";
+}
+
+static const char *audio_channel_to_str(qap_pcm_chmap channel)
+{
+	switch (channel) {
+	case QAP_AUDIO_PCM_CHANNEL_L: return "L";
+	case QAP_AUDIO_PCM_CHANNEL_R: return "R";
+	case QAP_AUDIO_PCM_CHANNEL_C: return "C";
+	case QAP_AUDIO_PCM_CHANNEL_LS: return "LS";
+	case QAP_AUDIO_PCM_CHANNEL_RS: return "RS";
+	case QAP_AUDIO_PCM_CHANNEL_LFE: return "LFE";
+	case QAP_AUDIO_PCM_CHANNEL_CS: return "CS";
+	case QAP_AUDIO_PCM_CHANNEL_LB: return "LB";
+	case QAP_AUDIO_PCM_CHANNEL_RB: return "RB";
+	case QAP_AUDIO_PCM_CHANNEL_TS: return "TS";
+	case QAP_AUDIO_PCM_CHANNEL_CVH: return "CVH";
+	case QAP_AUDIO_PCM_CHANNEL_MS: return "MS";
+	case QAP_AUDIO_PCM_CHANNEL_FLC: return "FLC";
+	case QAP_AUDIO_PCM_CHANNEL_FRC: return "FRC";
+	case QAP_AUDIO_PCM_CHANNEL_RLC: return "RLC";
+	case QAP_AUDIO_PCM_CHANNEL_RRC: return "RRC";
+	case QAP_AUDIO_PCM_CHANNEL_LFE2: return "LFE2";
+	case QAP_AUDIO_PCM_CHANNEL_SL: return "SL";
+	case QAP_AUDIO_PCM_CHANNEL_SR: return "SR";
+	case QAP_AUDIO_PCM_CHANNEL_TFL: return "TFL";
+	case QAP_AUDIO_PCM_CHANNEL_TFR: return "TFR";
+	case QAP_AUDIO_PCM_CHANNEL_TC: return "TC";
+	case QAP_AUDIO_PCM_CHANNEL_TBL: return "TBL";
+	case QAP_AUDIO_PCM_CHANNEL_TBR: return "TBR";
+	case QAP_AUDIO_PCM_CHANNEL_TSL: return "TSL";
+	case QAP_AUDIO_PCM_CHANNEL_TSR: return "TSR";
+	case QAP_AUDIO_PCM_CHANNEL_TBC: return "TBC";
+	case QAP_AUDIO_PCM_CHANNEL_BFC: return "BFC";
+	case QAP_AUDIO_PCM_CHANNEL_BFL: return "BFL";
+	case QAP_AUDIO_PCM_CHANNEL_BFR: return "BFR";
+	case QAP_AUDIO_PCM_CHANNEL_LW: return "LW";
+	case QAP_AUDIO_PCM_CHANNEL_RW: return "RW";
+	case QAP_AUDIO_PCM_CHANNEL_LSD: return "LSD";
+	case QAP_AUDIO_PCM_CHANNEL_RSD: return "RSD";
+	}
+	return "??";
+}
+
+static const char *audio_chmap_to_str(int channels, uint8_t *map)
+{
+	static char buf[256];
+	int len = sizeof (buf);
+	int offset = 0;
+
+	for (int i = 0; i < channels && offset < len; i++) {
+		int r = snprintf(buf + offset, len - offset, "%s%s",
+				 audio_channel_to_str(map[i]),
+				 i == channels  - 1 ? "" : ",");
+		if (r > 0)
+			offset += r;
+	}
+
+	buf[offset] = '\0';
+
+	return buf;
+}
+
 static void handle_buffer(qap_audio_buffer_t *buffer)
 {
 	dbg("qap: pcm buffer size=%u pts=%" PRIi64,
@@ -228,11 +313,16 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	write_buffer(output_stream, &buffer->common_params);
 }
 
-static void handle_output_config(qap_output_config_t *cfg)
+static void handle_output_config(qap_output_buff_params_t *out_buffer)
 {
-	info("qap: output config: id=0x%x channels=%d sr=%d ss=%d interleaved=%d",
-	     cfg->id, cfg->channels, cfg->sample_rate, cfg->bit_width,
-	     cfg->is_interleaved);
+	qap_output_config_t *cfg = &out_buffer->output_config;
+
+	info("qap: output 0x%x config: id=0x%x format=%s sr=%d ss=%d "
+	     "interleaved=%d channels=%d chmap[%s]",
+	     out_buffer->output_id, cfg->id,
+	     audio_format_to_str(cfg->format),
+	     cfg->sample_rate, cfg->bit_width, cfg->is_interleaved,
+	     cfg->channels, audio_chmap_to_str(cfg->channels, cfg->ch_map));
 
 	if (!cfg->sample_rate) {
 		err("null sample rate, default to 48000");
@@ -264,7 +354,7 @@ static void handle_qap_session_event(qap_session_handle_t session, void *priv,
 			    "size=%d expected=%zu", size,
 			    sizeof (qap_audio_buffer_t));
 		}
-		handle_output_config(&((qap_audio_buffer_t *)data)->buffer_parms.output_buf_params.output_config);
+		handle_output_config(&((qap_audio_buffer_t *)data)->buffer_parms.output_buf_params);
 		break;
 	case QAP_CALLBACK_EVENT_EOS:
 		info("qap: EOS for primary");
