@@ -572,21 +572,6 @@ int main(int argc, char **argv)
 
 	qap_session_set_callback(qap_session, handle_qap_session_event, NULL);
 
-	memset(&qap_mod_cfg, 0, sizeof (qap_mod_cfg));
-	qap_mod_cfg.module_type = QAP_MODULE_DECODER;
-	qap_mod_cfg.flags = QAP_MODULE_FLAG_PRIMARY;
-	qap_mod_cfg.format = qap_format;
-
-	if (qap_module_init(qap_session, &qap_mod_cfg, &qap_module)) {
-		err("qap: failed to init module");
-		return 1;
-	}
-
-	if (qap_module_set_callback(qap_module, handle_qap_module_event, NULL)) {
-		err("qap: failed to set module callback");
-		return 1;
-	}
-
 	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
 	qap_session_cfg.num_output = 1;
 	qap_session_cfg.output_config[0].id = AUDIO_OUTPUT_ID;
@@ -607,6 +592,21 @@ int main(int argc, char **argv)
 			err("qap: QAP_SESSION_CMD_SET_KVPAIRS command failed");
 			return 1;
 		}
+	}
+
+	memset(&qap_mod_cfg, 0, sizeof (qap_mod_cfg));
+	qap_mod_cfg.module_type = QAP_MODULE_DECODER;
+	qap_mod_cfg.flags = QAP_MODULE_FLAG_PRIMARY;
+	qap_mod_cfg.format = qap_format;
+
+	if (qap_module_init(qap_session, &qap_mod_cfg, &qap_module)) {
+		err("qap: failed to init module");
+		return 1;
+	}
+
+	if (qap_module_set_callback(qap_module, handle_qap_module_event, NULL)) {
+		err("qap: failed to set module callback");
+		return 1;
 	}
 
 	ret = qap_module_cmd(qap_module, QAP_MODULE_CMD_START,
