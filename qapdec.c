@@ -592,7 +592,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	qap_session = qap_session_open(QAP_SESSION_DECODE_ONLY, qap_lib);
+	qap_session = qap_session_open(QAP_SESSION_BROADCAST, qap_lib);
 	if (!qap_session) {
 		err("qap: failed to open decode session");
 		return 1;
