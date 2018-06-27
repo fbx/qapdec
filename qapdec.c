@@ -42,7 +42,7 @@
 # define QAP_LIB_DOLBY_MS12 "/usr/lib64/libdolby_ms12_wrapper.so"
 #endif
 
-#define AUDIO_OUTPUT_ID 0x666
+#define AUDIO_OUTPUT_ID_BASE 0x100
 
 static AVFormatContext *avctx;
 static AVStream *avstream;
@@ -307,13 +307,14 @@ static const char *audio_chmap_to_str(int channels, uint8_t *map)
 
 static void handle_buffer(qap_audio_buffer_t *buffer)
 {
-	dbg("qap: pcm buffer size=%u pts=%" PRIi64,
+	dbg("qap: output 0x%x pcm buffer size=%u pts=%" PRIi64,
+	    buffer->buffer_parms.output_buf_params.output_id,
 	    buffer->common_params.size, buffer->common_params.timestamp);
 
-	assert(buffer->buffer_parms.output_buf_params.output_id == AUDIO_OUTPUT_ID);
 	assert(wrote_wav_header);
 
-	write_buffer(output_stream, &buffer->common_params);
+	if (buffer->buffer_parms.output_buf_params.output_id == AUDIO_OUTPUT_ID_BASE)
+		write_buffer(output_stream, &buffer->common_params);
 }
 
 static void handle_output_config(qap_output_buff_params_t *out_buffer)
@@ -332,7 +333,7 @@ static void handle_output_config(qap_output_buff_params_t *out_buffer)
 		cfg->sample_rate = qap_input_sample_rate;
 	}
 
-	if (!wrote_wav_header) {
+	if (!wrote_wav_header && out_buffer->output_id == AUDIO_OUTPUT_ID_BASE) {
 		write_header(output_stream, cfg);
 		wrote_wav_header = true;
 	}
@@ -476,7 +477,9 @@ int main(int argc, char **argv)
 	int opt;
 	int ret;
 	int stream_index = -1;
-	int max_channels = 8;
+	int channels;
+	int max_channels[3] = { -1, -1, -1 };
+	int num_outputs = 0;
 	char *kvpairs = NULL;
 	const char *qap_lib_name;
 	size_t written = 0;
@@ -491,12 +494,18 @@ int main(int argc, char **argv)
 	while ((opt = getopt(argc, argv, "c:hk:o:s:v")) != -1) {
 		switch (opt) {
 		case 'c':
-			max_channels = atoi(optarg);
-			if (max_channels <= 0 || max_channels > 8) {
+			channels = atoi(optarg);
+			if (channels <= 0 || channels > 8) {
 				err("invalid number of channels %s", optarg);
 				usage();
 				return 1;
 			}
+			if (num_outputs >= 3) {
+				err("too many outputs");
+				usage();
+				return 1;
+			}
+			max_channels[num_outputs++] = channels;
 			break;
 		case 'v':
 			debug_level++;
@@ -523,6 +532,11 @@ int main(int argc, char **argv)
 			usage();
 			return 1;
 		}
+	}
+
+	if (num_outputs == 0) {
+		num_outputs = 1;
+		max_channels[0] = 8;
 	}
 
 	if (optind >= argc) {
@@ -601,9 +615,11 @@ int main(int argc, char **argv)
 	qap_session_set_callback(qap_session, handle_qap_session_event, NULL);
 
 	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
-	qap_session_cfg.num_output = 1;
-	qap_session_cfg.output_config[0].id = AUDIO_OUTPUT_ID;
-	qap_session_cfg.output_config[0].channels = max_channels;
+	qap_session_cfg.num_output = num_outputs;
+	for (int i = 0; i < num_outputs; i++) {
+		qap_session_cfg.output_config[i].id = AUDIO_OUTPUT_ID_BASE + i;
+		qap_session_cfg.output_config[i].channels = max_channels[i];
+	}
 
 	ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_OUTPUTS,
 			      sizeof (qap_session_cfg), &qap_session_cfg,
