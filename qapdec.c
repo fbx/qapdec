@@ -572,8 +572,9 @@ int main(int argc, char **argv)
 		qap_format = QAP_AUDIO_FORMAT_EAC3;
 		break;
 	case AV_CODEC_ID_AAC:
+	case AV_CODEC_ID_AAC_LATM:
 		qap_lib_name = QAP_LIB_DOLBY_MS12;
-		qap_format = QAP_AUDIO_FORMAT_AAC;
+		qap_format = QAP_AUDIO_FORMAT_AAC_ADTS;
 		break;
 	case AV_CODEC_ID_DTS:
 		qap_lib_name = QAP_LIB_DTS_M8;
