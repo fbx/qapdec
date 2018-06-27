@@ -62,7 +62,7 @@ static int wav_block_size;
 static pthread_mutex_t qap_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
 static bool qap_eos_received;
-static bool qap_data_avail;
+static bool qap_buffer_full;
 static int qap_input_sample_rate;
 
 static FILE *output_stream;
@@ -410,7 +410,7 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 			dbg("qap: %u bytes avail", buf->bytes_available);
 		}
 		pthread_mutex_lock(&qap_lock);
-		qap_data_avail = true;
+		qap_buffer_full = false;
 		pthread_cond_signal(&qap_cond);
 		pthread_mutex_unlock(&qap_lock);
 		break;
@@ -431,7 +431,7 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 static int wait_buffer_available(qap_module_handle_t module)
 {
 	pthread_mutex_lock(&qap_lock);
-	while (!qap_data_avail)
+	while (qap_buffer_full)
 		pthread_cond_wait(&qap_cond, &qap_lock);
 	pthread_mutex_unlock(&qap_lock);
 
@@ -689,6 +689,11 @@ int main(int argc, char **argv)
 
 		while (qap_buffer.common_params.offset <
 		       qap_buffer.common_params.size) {
+
+			pthread_mutex_lock(&qap_lock);
+			qap_buffer_full = true;
+			pthread_mutex_unlock(&qap_lock);
+
 			ret = qap_module_process(qap_module, &qap_buffer);
 			if (ret < 0) {
 				if (wait_buffer_available(qap_module) < 0)
