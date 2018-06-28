@@ -311,10 +311,11 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	    buffer->buffer_parms.output_buf_params.output_id,
 	    buffer->common_params.size, buffer->common_params.timestamp);
 
-	assert(wrote_wav_header);
+	if (buffer->buffer_parms.output_buf_params.output_id == AUDIO_OUTPUT_ID_BASE) {
+		assert(wrote_wav_header);
 
-	if (buffer->buffer_parms.output_buf_params.output_id == AUDIO_OUTPUT_ID_BASE)
 		write_buffer(output_stream, &buffer->common_params);
+	}
 }
 
 static void handle_output_config(qap_output_buff_params_t *out_buffer)
