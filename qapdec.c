@@ -464,6 +464,7 @@ static void usage(void)
 		"  -v             increase debug verbosity\n"
 		"  -c <channels>  maximum number of channels to output\n"
 		"  -k <kvpairs>   pass kvpairs string to the decoder backend\n"
+		"  -l <count>     number of times the stream will be decoded\n"
 		"\n");
 }
 
@@ -477,6 +478,7 @@ int main(int argc, char **argv)
 	const char *url;
 	int opt;
 	int ret;
+	int loops = 1;
 	int stream_index = -1;
 	int channels;
 	int max_channels[3] = { -1, -1, -1 };
@@ -492,7 +494,7 @@ int main(int argc, char **argv)
 
 	output_stream = stdout;
 
-	while ((opt = getopt(argc, argv, "c:hk:o:s:v")) != -1) {
+	while ((opt = getopt(argc, argv, "c:hk:l:o:s:v")) != -1) {
 		switch (opt) {
 		case 'c':
 			channels = atoi(optarg);
@@ -513,6 +515,9 @@ int main(int argc, char **argv)
 			break;
 		case 'k':
 			kvpairs = optarg;
+			break;
+		case 'l':
+			loops = atoi(optarg);
 			break;
 		case 's':
 			stream_index = atoi(optarg);
@@ -552,6 +557,7 @@ int main(int argc, char **argv)
 	av_register_all();
 	avformat_network_init();
 
+again:
 	info("QAP library version %u", qap_get_version());
 
 	ret = avformat_open_input(&avctx, url, NULL, NULL);
@@ -601,10 +607,12 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	qap_lib = qap_load_library(qap_lib_name);
 	if (!qap_lib) {
-		err("qap: failed to load library %s", qap_lib_name);
-		return 1;
+		qap_lib = qap_load_library(qap_lib_name);
+		if (!qap_lib) {
+			err("qap: failed to load library %s", qap_lib_name);
+			return 1;
+		}
 	}
 
 	qap_session = qap_session_open(QAP_SESSION_BROADCAST, qap_lib);
@@ -748,8 +756,17 @@ int main(int argc, char **argv)
 
 	info("written %zu bytes", written);
 
+	if (qap_module_deinit(qap_module))
+		err("qap: failed to deinit module");
+
 	if (qap_session_close(qap_session))
 		err("qap: failed to close session");
+
+	avformat_free_context(avctx);
+	avctx = NULL;
+
+	if (--loops > 0)
+		goto again;
 
 	if (qap_unload_library(qap_lib))
 		err("qap: failed to unload library");
