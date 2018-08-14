@@ -329,11 +329,6 @@ static void handle_output_config(qap_output_buff_params_t *out_buffer)
 	     cfg->sample_rate, cfg->bit_width, cfg->is_interleaved,
 	     cfg->channels, audio_chmap_to_str(cfg->channels, cfg->ch_map));
 
-	if (!cfg->sample_rate) {
-		assert(qap_input_sample_rate != 0);
-		cfg->sample_rate = qap_input_sample_rate;
-	}
-
 	if (!wrote_wav_header && out_buffer->output_id == AUDIO_OUTPUT_ID_BASE) {
 		write_header(output_stream, cfg);
 		wrote_wav_header = true;
