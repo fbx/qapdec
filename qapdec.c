@@ -42,6 +42,7 @@
 # define QAP_LIB_DOLBY_MS12 "/usr/lib64/libdolby_ms12_wrapper.so"
 #endif
 
+#define MAX_OUTPUTS 3
 #define AUDIO_OUTPUT_ID_BASE 0x100
 
 #define TRACK_BUFFER_FULL_PER_STREAM 1
@@ -56,6 +57,11 @@ volatile bool quit;
 static int wav_channel_count;
 static int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
 static int wav_block_size;
+
+static struct qap_output_ctx {
+	qap_output_config_t config;
+	uint64_t last_ts;
+} qap_outputs[MAX_OUTPUTS];
 
 static pthread_mutex_t qap_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
@@ -312,11 +318,29 @@ static const char *audio_chmap_to_str(int channels, uint8_t *map)
 	return buf;
 }
 
+static struct qap_output_ctx *get_qap_output(int index)
+{
+	assert(index >= AUDIO_OUTPUT_ID_BASE &&
+	       index < AUDIO_OUTPUT_ID_BASE + MAX_OUTPUTS);
+
+	return &qap_outputs[index - AUDIO_OUTPUT_ID_BASE];
+}
+
 static void handle_buffer(qap_audio_buffer_t *buffer)
 {
-	dbg("qap: output 0x%x pcm buffer size=%u pts=%" PRIi64,
+	struct qap_output_ctx *output =
+		get_qap_output(buffer->buffer_parms.output_buf_params.output_id);
+
+	dbg("qap: output 0x%x pcm buffer size=%u pts=%" PRIi64
+	    " duration=%" PRIi64 " last_diff=%" PRIi64,
 	    buffer->buffer_parms.output_buf_params.output_id,
-	    buffer->common_params.size, buffer->common_params.timestamp);
+	    buffer->common_params.size, buffer->common_params.timestamp,
+	    buffer->common_params.size * 1000000UL /
+	    (output->config.channels * output->config.bit_width / 8) /
+	    output->config.sample_rate,
+	    buffer->common_params.timestamp - output->last_ts);
+
+	output->last_ts = buffer->common_params.timestamp;
 
 	if (buffer->buffer_parms.output_buf_params.output_id == AUDIO_OUTPUT_ID_BASE) {
 		assert(wrote_wav_header);
@@ -328,6 +352,7 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 static void handle_output_config(qap_output_buff_params_t *out_buffer)
 {
 	qap_output_config_t *cfg = &out_buffer->output_config;
+	struct qap_output_ctx *output = get_qap_output(out_buffer->output_id);
 
 	info("qap: output 0x%x config: id=0x%x format=%s sr=%d ss=%d "
 	     "interleaved=%d channels=%d chmap[%s]",
@@ -335,6 +360,8 @@ static void handle_output_config(qap_output_buff_params_t *out_buffer)
 	     audio_format_to_str(cfg->format),
 	     cfg->sample_rate, cfg->bit_width, cfg->is_interleaved,
 	     cfg->channels, audio_chmap_to_str(cfg->channels, cfg->ch_map));
+
+	output->config = *cfg;
 
 	if (!wrote_wav_header && out_buffer->output_id == AUDIO_OUTPUT_ID_BASE) {
 		write_header(output_stream, cfg);
@@ -564,7 +591,7 @@ int main(int argc, char **argv)
 	int primary_stream_index = -1;
 	int secondary_stream_index = -1;
 	int channels;
-	int max_channels[3] = { -1, -1, -1 };
+	int max_channels[MAX_OUTPUTS] = { -1, -1, -1 };
 	int num_outputs = 0;
 	char *kvpairs = NULL;
 	const char *qap_lib_name;
@@ -586,7 +613,7 @@ int main(int argc, char **argv)
 				usage();
 				return 1;
 			}
-			if (num_outputs >= 3) {
+			if (num_outputs >= MAX_OUTPUTS) {
 				err("too many outputs");
 				usage();
 				return 1;
