@@ -45,8 +45,6 @@
 #define MAX_OUTPUTS 3
 #define AUDIO_OUTPUT_ID_BASE 0x100
 
-#define TRACK_BUFFER_FULL_PER_STREAM 1
-
 qap_lib_handle_t qap_lib;
 qap_session_handle_t qap_session;
 
@@ -67,7 +65,6 @@ static pthread_mutex_t qap_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
 
 static bool qap_eos_received;
-static bool qap_buffer_full;
 
 static FILE *output_stream;
 
@@ -441,17 +438,10 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 			dbg("qap: %s: %u bytes avail", stream->name,
 			    buf->bytes_available);
 		}
-#if TRACK_BUFFER_FULL_PER_STREAM
 		pthread_mutex_lock(&stream->lock);
 		stream->buffer_full = false;
 		pthread_cond_signal(&stream->cond);
 		pthread_mutex_unlock(&stream->lock);
-#else
-		pthread_mutex_lock(&qap_lock);
-		qap_buffer_full = false;
-		pthread_cond_signal(&qap_cond);
-		pthread_mutex_unlock(&qap_lock);
-#endif
 		break;
 	case QAP_MODULE_CALLBACK_EVENT_INPUT_CFG_CHANGE:
 		if (size != sizeof (qap_input_config_t)) {
@@ -471,17 +461,10 @@ static int wait_buffer_available(struct stream *stream)
 {
 	dbg(" dec: %s: wait buffer", stream->name);
 
-#if TRACK_BUFFER_FULL_PER_STREAM
 	pthread_mutex_lock(&stream->lock);
 	while (stream->buffer_full)
 		pthread_cond_wait(&stream->cond, &stream->lock);
 	pthread_mutex_unlock(&stream->lock);
-#else
-	pthread_mutex_lock(&qap_lock);
-	while (qap_buffer_full)
-		pthread_cond_wait(&qap_cond, &qap_lock);
-	pthread_mutex_unlock(&qap_lock);
-#endif
 
 	return 0;
 }
@@ -839,15 +822,9 @@ again:
 		while (qap_buffer.common_params.offset <
 		       qap_buffer.common_params.size) {
 
-#if TRACK_BUFFER_FULL_PER_STREAM
 			pthread_mutex_lock(&stream->lock);
 			stream->buffer_full = true;
 			pthread_mutex_unlock(&stream->lock);
-#else
-			pthread_mutex_lock(&qap_lock);
-			qap_buffer_full = true;
-			pthread_mutex_unlock(&qap_lock);
-#endif
 
 			ret = qap_module_process(stream->module, &qap_buffer);
 			if (ret < 0) {
