@@ -106,6 +106,10 @@ if [ ! -e Makefile ]; then
         --disable-ffserver \
         --disable-encoders \
         --disable-decoders \
+        --enable-decoder=aac \
+        --enable-decoder=ac3 \
+        --enable-decoder=eac3 \
+        --enable-decoder=dca \
         --disable-muxers \
         --disable-demuxers \
         --enable-demuxer=aac \
