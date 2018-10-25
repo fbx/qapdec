@@ -593,6 +593,15 @@ init_stream(struct stream *stream, uint32_t flags)
 	return 0;
 }
 
+enum output_type {
+	OUTPUT_NONE,
+	OUTPUT_STEREO,
+	OUTPUT_5DOT1,
+	OUTPUT_7DOT1,
+	OUTPUT_AC3,
+	OUTPUT_EAC3,
+};
+
 int main(int argc, char **argv)
 {
 	const char *url;
@@ -601,8 +610,7 @@ int main(int argc, char **argv)
 	int loops = 1;
 	int primary_stream_index = -1;
 	int secondary_stream_index = -1;
-	int channels;
-	int max_channels[MAX_OUTPUTS] = { -1, -1, -1 };
+	enum output_type outputs[MAX_OUTPUTS] = { };
 	int num_outputs = 0;
 	char *kvpairs = NULL;
 	const char *qap_lib_name;
@@ -618,18 +626,26 @@ int main(int argc, char **argv)
 	while ((opt = getopt(argc, argv, "c:hk:l:o:p:s:v")) != -1) {
 		switch (opt) {
 		case 'c':
-			channels = atoi(optarg);
-			if (channels <= 0 || channels > 8) {
-				err("invalid number of channels %s", optarg);
-				usage();
-				return 1;
-			}
 			if (num_outputs >= MAX_OUTPUTS) {
 				err("too many outputs");
 				usage();
 				return 1;
 			}
-			max_channels[num_outputs++] = channels;
+			if (!strcmp(optarg, "dd") || !strcmp(optarg, "ac3"))
+				outputs[num_outputs++] = OUTPUT_AC3;
+			else if (!strcmp(optarg, "ddp") || !strcmp(optarg, "eac3"))
+				outputs[num_outputs++] = OUTPUT_EAC3;
+			else if (!strcmp(optarg, "stereo") || atoi(optarg) == 2)
+				outputs[num_outputs++] = OUTPUT_STEREO;
+			else if (!strcmp(optarg, "5.1") || atoi(optarg) == 6)
+				outputs[num_outputs++] = OUTPUT_5DOT1;
+			else if (!strcmp(optarg, "7.1") || atoi(optarg) == 8)
+				outputs[num_outputs++] = OUTPUT_7DOT1;
+			else {
+				err("invalid output %s", optarg);
+				usage();
+				return 1;
+			}
 			break;
 		case 'v':
 			debug_level++;
@@ -664,10 +680,8 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (num_outputs == 0) {
-		num_outputs = 1;
-		max_channels[0] = 8;
-	}
+	if (outputs[0] == OUTPUT_NONE)
+		outputs[0] = OUTPUT_7DOT1;
 
 	if (optind >= argc) {
 		err("missing url to play\n");
@@ -765,10 +779,31 @@ again:
 	qap_session_set_callback(qap_session, handle_qap_session_event, NULL);
 
 	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
-	qap_session_cfg.num_output = num_outputs;
-	for (int i = 0; i < num_outputs; i++) {
-		qap_session_cfg.output_config[i].id = AUDIO_OUTPUT_ID_BASE + i;
-		qap_session_cfg.output_config[i].channels = max_channels[i];
+	for (int i = 0; i < MAX_OUTPUTS; i++) {
+		qap_output_config_t *output_cfg =
+			&qap_session_cfg.output_config[qap_session_cfg.num_output];
+		switch (outputs[i]) {
+		case OUTPUT_NONE:
+			continue;
+		case OUTPUT_STEREO:
+			output_cfg->channels = 2;
+			break;
+		case OUTPUT_5DOT1:
+			output_cfg->channels = 6;
+			break;
+		case OUTPUT_7DOT1:
+			output_cfg->channels = 8;
+			break;
+		case OUTPUT_AC3:
+			output_cfg->format = QAP_AUDIO_FORMAT_AC3;
+			break;
+		case OUTPUT_EAC3:
+			output_cfg->format = QAP_AUDIO_FORMAT_EAC3;
+			break;
+		}
+
+		output_cfg->id = AUDIO_OUTPUT_ID_BASE +
+			qap_session_cfg.num_output++;
 	}
 
 	ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_OUTPUTS,
