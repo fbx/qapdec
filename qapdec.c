@@ -504,15 +504,27 @@ static void handle_quit(int sig)
 }
 
 static int
+format_is_raw(qap_audio_format_t format)
+{
+	return format == QAP_AUDIO_FORMAT_PCM_16_BIT ||
+		format == QAP_AUDIO_FORMAT_PCM_32_BIT ||
+		format == QAP_AUDIO_FORMAT_PCM_8_24_BIT ||
+		format == QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED ||
+		format == QAP_AUDIO_FORMAT_AAC;
+}
+
+static int
 init_stream(struct stream *stream, uint32_t flags)
 {
 	qap_audio_format_t qap_format;
 	qap_module_config_t qap_mod_cfg;
+	AVCodecParameters *codecpar;
 	int ret;
 
 	assert(stream->avstream != NULL);
+	codecpar = stream->avstream->codecpar;
 
-	switch (stream->avstream->codecpar->codec_id) {
+	switch (codecpar->codec_id) {
 	case AV_CODEC_ID_AC3:
 		qap_format = QAP_AUDIO_FORMAT_AC3;
 		break;
@@ -526,9 +538,18 @@ init_stream(struct stream *stream, uint32_t flags)
 	case AV_CODEC_ID_DTS:
 		qap_format = QAP_AUDIO_FORMAT_DTS;
 		break;
+	case AV_CODEC_ID_PCM_S16LE:
+		qap_format = QAP_AUDIO_FORMAT_PCM_16_BIT;
+		break;
+	case AV_CODEC_ID_PCM_S24LE:
+		qap_format = QAP_AUDIO_FORMAT_PCM_8_24_BIT;
+		break;
+	case AV_CODEC_ID_PCM_S32LE:
+		qap_format = QAP_AUDIO_FORMAT_PCM_32_BIT;
+		break;
 	default:
 		err("cannot decode %s format",
-		    avcodec_get_name(stream->avstream->codecpar->codec_id));
+		    avcodec_get_name(codecpar->codec_id));
 		return 1;
 	}
 
@@ -536,6 +557,13 @@ init_stream(struct stream *stream, uint32_t flags)
 	qap_mod_cfg.module_type = QAP_MODULE_DECODER;
 	qap_mod_cfg.flags = flags;
 	qap_mod_cfg.format = qap_format;
+
+	if (format_is_raw(qap_format)) {
+		qap_mod_cfg.channels = codecpar->channels;
+		qap_mod_cfg.is_interleaved = true;
+		qap_mod_cfg.sample_rate = codecpar->sample_rate;
+		qap_mod_cfg.bit_width = codecpar->bits_per_coded_sample;
+	}
 
 	if (qap_module_init(qap_session, &qap_mod_cfg, &stream->module)) {
 		err("qap: failed to init module");
@@ -705,6 +733,9 @@ again:
 	case AV_CODEC_ID_EAC3:
 	case AV_CODEC_ID_AAC:
 	case AV_CODEC_ID_AAC_LATM:
+	case AV_CODEC_ID_PCM_S16LE:
+	case AV_CODEC_ID_PCM_S24LE:
+	case AV_CODEC_ID_PCM_S32LE:
 		qap_lib_name = QAP_LIB_DOLBY_MS12;
 		break;
 	case AV_CODEC_ID_DTS:
