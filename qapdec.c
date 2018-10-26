@@ -937,6 +937,11 @@ again:
 
 			ret = qap_module_process(stream->module, &qap_buffer);
 			if (ret < 0) {
+				if (stream->flags & QAP_MODULE_FLAG_SECONDARY) {
+					av_packet_unref(&pkt);
+					err("in: %s full, drop", stream->name);
+					break;
+				}
 				if (wait_buffer_available(stream) < 0)
 					return 1;
 			} else if (ret == 0) {
