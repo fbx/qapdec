@@ -75,6 +75,8 @@ struct stream {
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 	bool buffer_full;
+	bool started;
+	uint32_t flags;
 };
 
 #define WAV_SPEAKER_FRONT_LEFT			0x1
@@ -514,12 +516,55 @@ format_is_raw(qap_audio_format_t format)
 }
 
 static int
+stream_start(struct stream *stream)
+{
+	int ret;
+
+	if (stream->started)
+		return 0;
+
+	info("qap: %s: start", stream->name);
+
+	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_START,
+			     0, NULL, NULL, NULL);
+	if (ret) {
+		err("qap: QAP_SESSION_CMD_START command failed");
+		return 1;
+	}
+
+	stream->started = true;
+
+	return 0;
+}
+
+static int
+stream_stop(struct stream *stream)
+{
+	int ret;
+
+	if (!stream->started)
+		return 0;
+
+	info("qap: %s: stop", stream->name);
+
+	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_STOP,
+			     0, NULL, NULL, NULL);
+	if (ret) {
+		err("qap: QAP_SESSION_CMD_STOP command failed");
+		return 1;
+	}
+
+	stream->started = false;
+
+	return 0;
+}
+
+static int
 init_stream(struct stream *stream, uint32_t flags)
 {
 	qap_audio_format_t qap_format;
 	qap_module_config_t qap_mod_cfg;
 	AVCodecParameters *codecpar;
-	int ret;
 
 	assert(stream->avstream != NULL);
 	codecpar = stream->avstream->codecpar;
@@ -576,17 +621,15 @@ init_stream(struct stream *stream, uint32_t flags)
 		return 1;
 	}
 
-	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_START,
-			     0, NULL, NULL, NULL);
-	if (ret) {
-		err("qap: QAP_SESSION_CMD_START command failed");
-		return 1;
-	}
-
 	if (flags & QAP_MODULE_FLAG_PRIMARY)
 		stream->name = "PRIMARY";
 	else if (flags & QAP_MODULE_FLAG_SECONDARY)
 		stream->name = "SECONDARY";
+
+	stream->flags = flags;
+
+	if (stream_start(stream))
+		return 1;
 
 	info("using stream %d as %s", stream->avstream->index, stream->name);
 
@@ -921,12 +964,7 @@ again:
 		qap_buffer.buffer_parms.input_buf_params.flags = QAP_BUFFER_EOS;
 		qap_module_process(streams[i].module, &qap_buffer);
 
-		ret = qap_module_cmd(streams[i].module, QAP_MODULE_CMD_STOP,
-				     0, NULL, NULL, NULL);
-		if (ret) {
-			err("qap: QAP_MODULE_CMD_STOP command failed");
-			return 1;
-		}
+		stream_stop(&streams[i]);
 	}
 
 	/* wait EOS */
