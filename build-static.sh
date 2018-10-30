@@ -53,7 +53,7 @@ p "FFMPEG"
 
 cd "$D"
 
-pkg="ffmpeg-3.4.2"
+pkg="ffmpeg-4.0.2"
 archive="$pkg.tar.bz2"
 S="$D/src/$pkg"
 
@@ -103,7 +103,6 @@ if [ ! -e Makefile ]; then
         --disable-ffmpeg \
         --disable-ffplay \
         --disable-ffprobe \
-        --disable-ffserver \
         --disable-encoders \
         --disable-decoders \
         --enable-decoder=aac \
