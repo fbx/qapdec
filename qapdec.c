@@ -48,26 +48,24 @@
 qap_lib_handle_t qap_lib;
 qap_session_handle_t qap_session;
 
-bool wrote_wav_header;
 int debug_level = 1;
 volatile bool quit;
-
-static int wav_channel_count;
-static int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
-static int wav_block_size;
 
 static struct qap_output_ctx {
 	qap_output_config_t config;
 	qap_output_delay_t delay;
+	bool wav_enabled;
+	int wav_channel_count;
+	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
+	int wav_block_size;
 	uint64_t last_ts;
+	FILE *stream;
 } qap_outputs[MAX_OUTPUTS];
 
 static pthread_mutex_t qap_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
 
 static bool qap_eos_received;
-
-static FILE *output_stream;
 
 struct stream {
 	const char *name;
@@ -155,10 +153,30 @@ static struct {
 	{ WAV_SPEAKER_TOP_BACK_RIGHT, QAP_AUDIO_PCM_CHANNEL_TBR },
 };
 
-static int write_header(FILE *out, qap_output_config_t *cfg)
+static int output_write_header(struct qap_output_ctx *out)
 {
+	qap_output_config_t *cfg = &out->config;
+	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
+	int wav_channel_count = 0;
 	struct wav_header hdr;
 	uint32_t channel_mask = 0;
+
+	if (out->wav_enabled)
+		return 0;
+
+	if (!out->stream)
+		return 0;
+
+	switch (out->config.format) {
+	case QAP_AUDIO_FORMAT_PCM_16_BIT:
+	case QAP_AUDIO_FORMAT_PCM_8_24_BIT:
+	case QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED:
+	case QAP_AUDIO_FORMAT_PCM_32_BIT:
+		break;
+	default:
+		// nothing to do here
+		return 0;
+	}
 
 	for (unsigned i = 0; i < ARRAY_SIZE(wav_channel_table); i++) {
 		uint8_t qap_ch = wav_channel_table[i].qap_channel;
@@ -202,34 +220,47 @@ static int write_header(FILE *out, qap_output_config_t *cfg)
 	memcpy(&hdr.data.chunk_label, "data", 4);
 	hdr.data.chunk_size = 0xffffffff;
 
-	if (fwrite(&hdr, sizeof (hdr), 1, out) != 1) {
+	if (fwrite(&hdr, sizeof (hdr), 1, out->stream) != 1) {
 		fprintf(stderr, "failed to write wav header\n");
 		return -1;
 	}
 
-	wav_block_size = hdr.fmt.block_align;
+	memcpy(out->wav_channel_offset, wav_channel_offset,
+	       sizeof (wav_channel_offset));
+
+	out->wav_block_size = hdr.fmt.block_align;
+	out->wav_channel_count = wav_channel_count;
+	out->wav_enabled = true;
 
 	return 0;
 }
 
-static int write_buffer(FILE *out, qap_buffer_common_t *buffer)
+static int output_write_buffer(struct qap_output_ctx *out,
+			       const qap_buffer_common_t *buffer)
 {
-	const uint8_t *src;
-	int sample_size;
-	int n_blocks;
+	if (!out->stream)
+		return 0;
 
-	src = buffer->data;
+	if (out->wav_enabled) {
+		const uint8_t *src;
+		int sample_size;
+		int n_blocks;
 
-	assert(buffer->size % wav_block_size == 0);
-	n_blocks = buffer->size / wav_block_size;
-	sample_size = wav_block_size / wav_channel_count;
+		src = buffer->data;
 
-	for (int i = 0; i < n_blocks; i++) {
-		for (int ch = 0; ch < wav_channel_count; ch++) {
-			fwrite(src + wav_channel_offset[ch],
-			       sample_size, 1, out);
+		assert(buffer->size % out->wav_block_size == 0);
+		n_blocks = buffer->size / out->wav_block_size;
+		sample_size = out->wav_block_size / out->wav_channel_count;
+
+		for (int i = 0; i < n_blocks; i++) {
+			for (int ch = 0; ch < out->wav_channel_count; ch++) {
+				fwrite(src + out->wav_channel_offset[ch],
+				       sample_size, 1, out->stream);
+			}
+			src += out->wav_block_size;
 		}
-		src += wav_block_size;
+	} else {
+		fwrite(buffer->data, buffer->size, 1, out->stream);
 	}
 
 	return 0;
@@ -341,12 +372,7 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	    buffer->common_params.timestamp - output->last_ts);
 
 	output->last_ts = buffer->common_params.timestamp;
-
-	if (buffer->buffer_parms.output_buf_params.output_id == AUDIO_OUTPUT_ID_BASE) {
-		assert(wrote_wav_header);
-
-		write_buffer(output_stream, &buffer->common_params);
-	}
+	output_write_buffer(output, &buffer->common_params);
 }
 
 static void handle_output_config(qap_output_buff_params_t *out_buffer)
@@ -363,10 +389,7 @@ static void handle_output_config(qap_output_buff_params_t *out_buffer)
 
 	output->config = *cfg;
 
-	if (!wrote_wav_header && out_buffer->output_id == AUDIO_OUTPUT_ID_BASE) {
-		write_header(output_stream, cfg);
-		wrote_wav_header = true;
-	}
+	output_write_header(output);
 }
 
 static void handle_output_delay(qap_output_delay_t *delay)
@@ -701,6 +724,7 @@ int main(int argc, char **argv)
 	const char *qap_lib_name;
 	size_t written = 0;
 	struct stream streams[2];
+	FILE *output_stream;
 	qap_session_outputs_config_t qap_session_cfg;
 	qap_session_t qap_session_type;
 	qap_audio_buffer_t qap_buffer;
@@ -809,6 +833,7 @@ again:
 	}
 
 	memset(qap_outputs, 0, sizeof (qap_outputs));
+	qap_outputs[0].stream = output_stream;
 	qap_eos_received = false;
 
 	/* init ffmpeg source and demuxer */
