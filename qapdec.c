@@ -533,6 +533,7 @@ static void usage(void)
 		"Where OPTS is a combination of:\n"
 		"  -p <stream>    audio primary stream number to decode\n"
 		"  -s <stream>    audio secondary stream number to decode\n"
+		"  -t <session>   session type (broadcast, decode, encode, ott)\n"
 		"  -o <filename>  output data to file instead of stdout\n"
 		"  -v             increase debug verbosity\n"
 		"  -c <channels>  maximum number of channels to output\n"
@@ -701,13 +702,15 @@ int main(int argc, char **argv)
 	size_t written = 0;
 	struct stream streams[2];
 	qap_session_outputs_config_t qap_session_cfg;
+	qap_session_t qap_session_type;
 	qap_audio_buffer_t qap_buffer;
 	AVFormatContext *avctx = NULL;
 	AVPacket pkt;
 
 	output_stream = stdout;
+	qap_session_type = QAP_SESSION_BROADCAST;
 
-	while ((opt = getopt(argc, argv, "c:hk:l:o:p:s:v")) != -1) {
+	while ((opt = getopt(argc, argv, "c:hk:l:o:p:s:t:v")) != -1) {
 		switch (opt) {
 		case 'c':
 			if (num_outputs >= MAX_OUTPUTS) {
@@ -751,6 +754,21 @@ int main(int argc, char **argv)
 			if (!output_stream) {
 				err("cannot open file `%s' for writing: %m",
 				    optarg);
+				return 1;
+			}
+			break;
+		case 't':
+			if (!strncmp(optarg, "br", 2))
+				qap_session_type = QAP_SESSION_BROADCAST;
+			else if (!strncmp(optarg, "dec", 3))
+				qap_session_type = QAP_SESSION_DECODE_ONLY;
+			else if (!strncmp(optarg, "enc", 3))
+				qap_session_type = QAP_SESSION_ENCODE_ONLY;
+			else if (!strncmp(optarg, "ott", 3))
+				qap_session_type = QAP_SESSION_MS12_OTT;
+			else {
+				err("invalid session type %s", optarg);
+				usage();
 				return 1;
 			}
 			break;
@@ -857,9 +875,9 @@ again:
 	}
 
 	/* init QAP session */
-	qap_session = qap_session_open(QAP_SESSION_BROADCAST, qap_lib);
+	qap_session = qap_session_open(qap_session_type, qap_lib);
 	if (!qap_session) {
-		err("qap: failed to open decode session");
+		err("qap: failed to open session");
 		return 1;
 	}
 
