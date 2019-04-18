@@ -58,6 +58,7 @@ static int wav_block_size;
 
 static struct qap_output_ctx {
 	qap_output_config_t config;
+	qap_output_delay_t delay;
 	uint64_t last_ts;
 } qap_outputs[MAX_OUTPUTS];
 
@@ -368,6 +369,38 @@ static void handle_output_config(qap_output_buff_params_t *out_buffer)
 	}
 }
 
+static void handle_output_delay(qap_output_delay_t *delay)
+{
+	struct qap_output_ctx *output = get_qap_output(delay->output_id);
+	int log_level;
+
+	if (output->delay.algo_delay == delay->algo_delay &&
+	    output->delay.buffering_delay == delay->buffering_delay &&
+	    output->delay.non_main_data_length == delay->non_main_data_length &&
+	    output->delay.non_main_data_offset == delay->non_main_data_offset)
+		return;
+
+	if (output->delay.algo_delay == delay->algo_delay)
+		log_level = 3;
+	else
+		log_level = 2;
+
+	print(log_level, "qap: output 0x%x delay: "
+	      "algo_delay=%u/%ums "
+	      "buffering_delay=%u/%ums "
+	      "non_main_data_offset=%u "
+	      "non_main_data_length=%u\n",
+	      delay->output_id,
+	      delay->algo_delay,
+	      delay->algo_delay / 48,
+	      delay->buffering_delay,
+	      delay->buffering_delay / 48,
+	      delay->non_main_data_offset,
+	      delay->non_main_data_length);
+
+	output->delay = *delay;
+}
+
 static void handle_qap_session_event(qap_session_handle_t session, void *priv,
 				     qap_callback_event_t event_id,
 				     int size, void *data)
@@ -410,6 +443,14 @@ static void handle_qap_session_event(qap_session_handle_t session, void *priv,
 		break;
 	case QAP_CALLBACK_EVENT_METADATA:
 		info("qap: metadata");
+		break;
+	case QAP_CALLBACK_EVENT_DELAY:
+		if (size != sizeof (qap_output_delay_t)) {
+			err("QAP_CALLBACK_EVENT_DELAY "
+			    "size=%d expected=%zu", size,
+			    sizeof (qap_output_delay_t));
+		}
+		handle_output_delay(data);
 		break;
 	default:
 		err("unknown QAP session event %u", event_id);
