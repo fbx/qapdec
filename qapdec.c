@@ -749,6 +749,9 @@ again:
 		pthread_mutex_init(&streams[i].lock, NULL);
 	}
 
+	memset(qap_outputs, 0, sizeof (qap_outputs));
+	qap_eos_received = false;
+
 	/* init ffmpeg source and demuxer */
 	ret = avformat_open_input(&avctx, url, NULL, NULL);
 	if (ret < 0) {
