@@ -1058,6 +1058,8 @@ again:
 		stream_stop(&streams[i]);
 	}
 
+	info(" in: sent EOS");
+
 	/* wait EOS */
 	pthread_mutex_lock(&qap_lock);
 	while (!qap_eos_received)
@@ -1080,7 +1082,7 @@ again:
 	avformat_free_context(avctx);
 	avctx = NULL;
 
-	if (--loops > 0)
+	if (!quit && --loops > 0)
 		goto again;
 
 	if (qap_unload_library(qap_lib))
