@@ -824,10 +824,9 @@ int main(int argc, char **argv)
 again:
 	info("QAP library version %u", qap_get_version());
 
+	memset(streams, 0, sizeof (streams));
+
 	for (int i = 0; i < 2; i++) {
-		streams[i].name = NULL;
-		streams[i].module = 0;
-		streams[i].avstream = NULL;
 		pthread_cond_init(&streams[i].cond, NULL);
 		pthread_mutex_init(&streams[i].lock, NULL);
 	}
@@ -1071,9 +1070,6 @@ again:
 	for (int i = 0; i < 2; i++) {
 		if (streams[i].module && qap_module_deinit(streams[i].module))
 			err("qap: failed to deinit module");
-
-		streams[i].module = 0;
-		streams[i].avstream = NULL;
 		pthread_cond_destroy(&streams[i].cond);
 		pthread_mutex_destroy(&streams[i].lock);
 	}
