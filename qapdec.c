@@ -863,7 +863,7 @@ again:
 
 	/* find secondary audio stream */
 	if (secondary_stream_index >= 0) {
-		if (secondary_stream_index >= avctx->nb_streams) {
+		if ((unsigned)secondary_stream_index >= avctx->nb_streams) {
 			av_err(ret, "secondary stream not available");
 			return 1;
 		}
