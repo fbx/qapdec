@@ -94,6 +94,7 @@ struct ffmpeg_src {
 	AVFormatContext *avctx;
 	struct stream *streams[MAX_STREAMS];
 	int n_streams;
+	pthread_t tid;
 };
 
 #define WAV_SPEAKER_FRONT_LEFT			0x1
@@ -962,6 +963,40 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 	return ret;
 }
 
+static void *
+ffmpeg_src_thread_func(void *userdata)
+{
+	struct ffmpeg_src *src = userdata;
+	int ret;
+
+	while (!quit) {
+		ret = ffmpeg_src_read_frame(src);
+		if (ret == AVERROR_EOF)
+			break;
+
+		if (ret < 0)
+			return (void *)1;
+	}
+
+	return 0;
+}
+
+static int
+ffmpeg_src_thread_start(struct ffmpeg_src *src)
+{
+	return pthread_create(&src->tid, NULL, ffmpeg_src_thread_func, src);
+}
+
+static int
+ffmpeg_src_thread_join(struct ffmpeg_src *src)
+{
+	void *ret = (void *)1;
+
+	pthread_join(src->tid, &ret);
+
+	return (intptr_t)ret;
+}
+
 enum output_type {
 	OUTPUT_NONE,
 	OUTPUT_STEREO,
@@ -1269,17 +1304,10 @@ again:
 	signal(SIGINT, handle_quit);
 	signal(SIGTERM, handle_quit);
 
-	while (!quit) {
-		ret = ffmpeg_src_read_frame(src);
-		if (ret == AVERROR_EOF)
-			break;
-
-		if (ret < 0) {
-			quit = 1;
-			decode_err = 1;
-			break;
-		}
-	}
+	ffmpeg_src_thread_start(src);
+	decode_err = ffmpeg_src_thread_join(src);
+	if (decode_err)
+		quit = 1;
 
 	if (!decode_err) {
 		/* send EOS and stop all streams */
