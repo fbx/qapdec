@@ -987,13 +987,12 @@ int main(int argc, char **argv)
 	char *kvpairs = NULL;
 	const char *qap_lib_name;
 	size_t written = 0;
-	FILE *output_stream;
+	FILE *output_stream = NULL;
 	struct ffmpeg_src *src;
 	qap_session_outputs_config_t qap_session_cfg;
 	qap_session_t qap_session_type;
 	AVStream *avstream;
 
-	output_stream = stdout;
 	qap_session_type = QAP_SESSION_BROADCAST;
 
 	while ((opt = getopt_long(argc, argv, "c:hk:l:o:p:s:t:v",
@@ -1037,7 +1036,11 @@ int main(int argc, char **argv)
 			secondary_stream_index = atoi(optarg);
 			break;
 		case 'o':
-			output_stream = fopen(optarg, "w");
+			if (!strcmp(optarg, "-"))
+				output_stream = stdout;
+			else
+				output_stream = fopen(optarg, "w");
+
 			if (!output_stream) {
 				err("cannot open file `%s' for writing: %m",
 				    optarg);
@@ -1247,7 +1250,7 @@ again:
 	if (qap_unload_library(qap_lib))
 		err("qap: failed to unload library");
 
-	if (output_stream != stdout)
+	if (output_stream && output_stream != stdout)
 		fclose(output_stream);
 
 	return decode_err;
