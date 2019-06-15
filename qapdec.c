@@ -53,6 +53,7 @@ int debug_level = 1;
 volatile bool quit;
 
 static struct qap_output_ctx {
+	const char *name;
 	qap_output_config_t config;
 	qap_output_delay_t delay;
 	bool wav_enabled;
@@ -371,9 +372,9 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	struct qap_output_ctx *output =
 		get_qap_output(buffer->buffer_parms.output_buf_params.output_id);
 
-	dbg("qap: output 0x%x pcm buffer size=%u pts=%" PRIi64
+	dbg("qap: out %s: pcm buffer size=%u pts=%" PRIi64
 	    " duration=%" PRIi64 " last_diff=%" PRIi64,
-	    buffer->buffer_parms.output_buf_params.output_id,
+	    output->name,
 	    buffer->common_params.size, buffer->common_params.timestamp,
 	    buffer->common_params.size * 1000000UL /
 	    (output->config.channels * output->config.bit_width / 8) /
@@ -389,9 +390,9 @@ static void handle_output_config(qap_output_buff_params_t *out_buffer)
 	qap_output_config_t *cfg = &out_buffer->output_config;
 	struct qap_output_ctx *output = get_qap_output(out_buffer->output_id);
 
-	info("qap: output 0x%x config: id=0x%x format=%s sr=%d ss=%d "
+	info("qap: out %s: config: id=0x%x format=%s sr=%d ss=%d "
 	     "interleaved=%d channels=%d chmap[%s]",
-	     out_buffer->output_id, cfg->id,
+	     output->name, cfg->id,
 	     audio_format_to_str(cfg->format),
 	     cfg->sample_rate, cfg->bit_width, cfg->is_interleaved,
 	     cfg->channels, audio_chmap_to_str(cfg->channels, cfg->ch_map));
@@ -417,12 +418,12 @@ static void handle_output_delay(qap_output_delay_t *delay)
 	else
 		log_level = 2;
 
-	print(log_level, "qap: output 0x%x delay: "
+	print(log_level, "qap: out %s: delay: "
 	      "algo_delay=%u/%ums "
 	      "buffering_delay=%u/%ums "
 	      "non_main_data_offset=%u "
 	      "non_main_data_length=%u\n",
-	      delay->output_id,
+	      output->name,
 	      delay->algo_delay,
 	      delay->algo_delay / 48,
 	      delay->buffering_delay,
@@ -492,7 +493,7 @@ static void handle_qap_session_event(qap_session_handle_t session, void *priv,
 
 static void handle_input_config(struct stream *stream, qap_input_config_t *cfg)
 {
-	info("qap: %s: format sr=%u ss=%u channels=%u",
+	info("qap: in %s: format sr=%u ss=%u channels=%u",
 	     stream->name, cfg->sample_rate, cfg->bit_width, cfg->channels);
 }
 
@@ -510,7 +511,7 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 			    sizeof (qap_send_buffer_t));
 		} else {
 			qap_send_buffer_t *buf = data;
-			dbg("qap: %s: %u bytes avail", stream->name,
+			dbg("qap: in %s: %u bytes avail", stream->name,
 			    buf->bytes_available);
 		}
 		pthread_mutex_lock(&stream->lock);
@@ -534,7 +535,7 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 
 static void wait_buffer_available(struct stream *stream)
 {
-	dbg(" dec: %s: wait buffer", stream->name);
+	dbg(" dec: in %s: wait buffer", stream->name);
 
 	pthread_mutex_lock(&stream->lock);
 	while (stream->buffer_full)
@@ -580,7 +581,7 @@ stream_start(struct stream *stream)
 	if (stream->started)
 		return 0;
 
-	info("qap: %s: start", stream->name);
+	info("qap: in %s: start", stream->name);
 
 	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_START,
 			     0, NULL, NULL, NULL);
@@ -602,7 +603,7 @@ stream_stop(struct stream *stream)
 	if (!stream->started)
 		return 0;
 
-	info("qap: %s: stop", stream->name);
+	info("qap: in %s: stop", stream->name);
 
 	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_STOP,
 			     0, NULL, NULL, NULL);
@@ -630,7 +631,8 @@ stream_send_eos(struct stream *stream)
 
 	ret = qap_module_process(stream->module, &qap_buffer);
 	if (ret) {
-		err("qap: %s: failed to send eos, err %d", stream->name, ret);
+		err("qap: in %s: failed to send eos, err %d",
+		    stream->name, ret);
 		return 1;
 	}
 
@@ -1143,24 +1145,31 @@ again:
 
 	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
 	for (int i = 0; i < MAX_OUTPUTS; i++) {
+		struct qap_output_ctx *output =
+			&qap_outputs[qap_session_cfg.num_output];
 		qap_output_config_t *output_cfg =
 			&qap_session_cfg.output_config[qap_session_cfg.num_output];
 		switch (outputs[i]) {
 		case OUTPUT_NONE:
 			continue;
 		case OUTPUT_STEREO:
+			output->name = "STEREO";
 			output_cfg->channels = 2;
 			break;
 		case OUTPUT_5DOT1:
+			output->name = "5DOT1";
 			output_cfg->channels = 6;
 			break;
 		case OUTPUT_7DOT1:
+			output->name = "7DOT1";
 			output_cfg->channels = 8;
 			break;
 		case OUTPUT_AC3:
+			output->name = "AC3";
 			output_cfg->format = QAP_AUDIO_FORMAT_AC3;
 			break;
 		case OUTPUT_EAC3:
+			output->name = "EAC3";
 			output_cfg->format = QAP_AUDIO_FORMAT_EAC3;
 			break;
 		}
