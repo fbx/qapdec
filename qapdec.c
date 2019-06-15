@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <assert.h>
 #include <signal.h>
+#include <getopt.h>
 #include <pthread.h>
 
 #include <dolby_ms12.h>
@@ -556,21 +557,6 @@ static int get_av_log_level(void)
 	return AV_LOG_QUIET;
 }
 
-static void usage(void)
-{
-	fprintf(stderr, "usage: qapdec [OPTS] <input>\n"
-		"Where OPTS is a combination of:\n"
-		"  -p <stream>    audio primary stream number to decode\n"
-		"  -s <stream>    audio secondary stream number to decode\n"
-		"  -t <session>   session type (broadcast, decode, encode, ott)\n"
-		"  -o <filename>  output data to file instead of stdout\n"
-		"  -v             increase debug verbosity\n"
-		"  -c <channels>  maximum number of channels to output\n"
-		"  -k <kvpairs>   pass kvpairs string to the decoder backend\n"
-		"  -l <count>     number of times the stream will be decoded\n"
-		"\n");
-}
-
 static void handle_quit(int sig)
 {
 	quit = true;
@@ -959,6 +945,34 @@ enum output_type {
 	OUTPUT_EAC3,
 };
 
+static void usage(void)
+{
+	fprintf(stderr, "usage: qapdec [OPTS] <input>\n"
+		"Where OPTS is a combination of:\n"
+		"  -v, --verbose                increase debug verbosity\n"
+		"  -p, --primary-stream=<n>     audio primary stream number to decode\n"
+		"  -s, --secondary-stream=<n>   audio secondary stream number to decode\n"
+		"  -t, --session-type=<type>    session type (broadcast, decode, encode, ott)\n"
+		"  -o, --output=<path>          output data to file instead of stdout\n"
+		"  -c, --channels=<channels>    maximum number of channels to output\n"
+		"  -k, --kvpairs=<kvpairs>      pass kvpairs string to the decoder backend\n"
+		"  -l, --loops=<count>          number of times the stream will be decoded\n"
+		"\n");
+}
+
+static const struct option long_options[] = {
+	{ "help",              no_argument,       0, 'h' },
+	{ "verbose",           no_argument,       0, 'v' },
+	{ "channels",          required_argument, 0, 'c' },
+	{ "kvpairs",           required_argument, 0, 'k' },
+	{ "loops",             required_argument, 0, 'l' },
+	{ "output",            required_argument, 0, 'o' },
+	{ "session-type",      required_argument, 0, 't' },
+	{ "primary-stream",    required_argument, 0, 'p' },
+	{ "secondary-stream",  required_argument, 0, 's' },
+	{ 0,                   0,                 0,  0  }
+};
+
 int main(int argc, char **argv)
 {
 	const char *url;
@@ -982,7 +996,8 @@ int main(int argc, char **argv)
 	output_stream = stdout;
 	qap_session_type = QAP_SESSION_BROADCAST;
 
-	while ((opt = getopt(argc, argv, "c:hk:l:o:p:s:t:v")) != -1) {
+	while ((opt = getopt_long(argc, argv, "c:hk:l:o:p:s:t:v",
+				  long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'c':
 			if (num_outputs >= MAX_OUTPUTS) {
