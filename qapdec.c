@@ -68,6 +68,7 @@ static struct qap_output_ctx {
 	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
 	int wav_block_size;
 	uint64_t last_ts;
+	uint64_t total_bytes;
 	FILE *stream;
 } qap_outputs[MAX_OUTPUTS];
 
@@ -142,6 +143,14 @@ packed_struct wav_header {
 		uint32_t	chunk_size;
 	} data;
 };
+
+static uint64_t
+get_time(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * UINT64_C(1000000) + ts.tv_nsec / UINT64_C(1000);
+}
 
 static struct {
 	uint32_t wav_channel;
@@ -389,6 +398,7 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	    buffer->common_params.timestamp - output->last_ts);
 
 	output->last_ts = buffer->common_params.timestamp;
+	output->total_bytes += buffer->common_params.size;
 	output_write_buffer(output, &buffer->common_params);
 }
 
@@ -811,6 +821,13 @@ fail:
 	return NULL;
 }
 
+static uint64_t
+ffmpeg_src_get_duration(struct ffmpeg_src *src)
+{
+	AVRational qap_timebase = { 1, 1000000 };
+	return av_rescale_q(src->avctx->duration, AV_TIME_BASE_Q, qap_timebase);
+}
+
 static AVStream *
 ffmpeg_src_get_avstream(struct ffmpeg_src *src, int index)
 {
@@ -995,9 +1012,11 @@ int main(int argc, char **argv)
 	int num_outputs = 0;
 	char *kvpairs = NULL;
 	const char *qap_lib_name;
-	size_t written = 0;
 	FILE *output_stream = NULL;
 	struct ffmpeg_src *src;
+	uint64_t src_duration;
+	uint64_t start_time;
+	uint64_t end_time;
 	uint32_t outputs_present;
 	int bs_mode;
 	qap_session_outputs_config_t qap_session_cfg;
@@ -1108,6 +1127,8 @@ again:
 	src = ffmpeg_src_create(url);
 	if (!src)
 		return 1;
+
+	src_duration = ffmpeg_src_get_duration(src);
 
 	avstream = ffmpeg_src_get_avstream(src, primary_stream_index);
 	if (!avstream) {
@@ -1229,6 +1250,8 @@ again:
 		}
 	}
 
+	start_time = get_time();
+
 	/* create primary QAP module */
 	ret = ffmpeg_src_map_stream(src, avstream->index,
 				    QAP_MODULE_FLAG_PRIMARY);
@@ -1256,8 +1279,6 @@ again:
 			decode_err = 1;
 			break;
 		}
-
-		written += ret;
 	}
 
 	if (!decode_err) {
@@ -1278,14 +1299,38 @@ again:
 		pthread_mutex_unlock(&qap_lock);
 	}
 
-	info("written %zu bytes", written);
-
 	/* cleanup */
 	ffmpeg_src_destroy(src);
 	src = NULL;
 
 	if (qap_session_close(qap_session))
 		err("qap: failed to close session");
+
+	end_time = get_time();
+
+	for (int i = 0; i < MAX_OUTPUTS; i++) {
+		struct qap_output_ctx *output = &qap_outputs[i];
+		uint64_t frames;
+		uint64_t duration;
+
+		if (output->total_bytes == 0)
+			continue;
+
+		duration = end_time - start_time;
+		frames = output->total_bytes / (output->config.channels *
+						output->config.bit_width / 8);
+
+		info("out: %s: %" PRIu64 " bytes, %" PRIu64 " frames, "
+		     "speed: %" PRIu64 "kB/sec, %" PRIu64 " frames/sec",
+		     output->name, output->total_bytes, frames,
+		     output->total_bytes * 1000 / duration,
+		     frames * 1000000 / duration);
+	}
+
+	if (!decode_err) {
+		info("render speed: %.2fx realtime",
+		     (float)src_duration / (float)(end_time - start_time));
+	}
 
 	if (!quit && --loops > 0)
 		goto again;
