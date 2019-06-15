@@ -46,6 +46,13 @@
 #define MAX_OUTPUTS 3
 #define AUDIO_OUTPUT_ID_BASE 0x100
 
+/* MS12 bitstream output mode */
+#define MS12_KEY_BS_OUT_MODE		"bs_out_mode"
+#define MS12_BS_OUT_MODE_PCM		0
+#define MS12_BS_OUT_MODE_DD		1
+#define MS12_BS_OUT_MODE_DDP		2
+#define MS12_BS_OUT_MODE_ALL		3
+
 qap_lib_handle_t qap_lib;
 qap_session_handle_t qap_session;
 
@@ -991,6 +998,8 @@ int main(int argc, char **argv)
 	size_t written = 0;
 	FILE *output_stream = NULL;
 	struct ffmpeg_src *src;
+	uint32_t outputs_present;
+	int bs_mode;
 	qap_session_outputs_config_t qap_session_cfg;
 	qap_session_t qap_session_type;
 	AVStream *avstream;
@@ -1143,6 +1152,7 @@ again:
 
 	qap_session_set_callback(qap_session, handle_qap_session_event, NULL);
 
+	outputs_present = 0;
 	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
 	for (int i = 0; i < MAX_OUTPUTS; i++) {
 		struct qap_output_ctx *output =
@@ -1174,10 +1184,33 @@ again:
 			break;
 		}
 
+		outputs_present |= 1 << outputs[i];
 		output_cfg->id = AUDIO_OUTPUT_ID_BASE +
 			qap_session_cfg.num_output++;
 	}
 
+	/* set BS mode for MS12 */
+	if (!strcmp(qap_lib_name, QAP_LIB_DOLBY_MS12)) {
+		char params[32];
+
+		if (outputs_present & (1 << OUTPUT_EAC3))
+			bs_mode = MS12_BS_OUT_MODE_DDP;
+		else if (outputs_present & (1 << OUTPUT_AC3))
+			bs_mode = MS12_BS_OUT_MODE_DD;
+		else
+			bs_mode = MS12_BS_OUT_MODE_PCM;
+
+		sprintf(params, "%s=%d", MS12_KEY_BS_OUT_MODE, bs_mode);
+
+		ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_KVPAIRS,
+				      strlen(params) + 1, params, NULL, NULL);
+		if (ret) {
+			err("qap: QAP_SESSION_CMD_SET_KVPAIRS command failed");
+			return 1;
+		}
+	}
+
+	/* setup outputs */
 	ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_OUTPUTS,
 			      sizeof (qap_session_cfg), &qap_session_cfg,
 			      NULL, NULL);
@@ -1186,6 +1219,7 @@ again:
 		return 1;
 	}
 
+	/* apply user kvpairs */
 	if (kvpairs) {
 		ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_KVPAIRS,
 				      strlen(kvpairs) + 1, kvpairs, NULL, NULL);
