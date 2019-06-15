@@ -71,11 +71,19 @@ struct stream {
 	const char *name;
 	AVStream *avstream;
 	qap_module_handle_t module;
+	qap_module_flags_t flags;
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 	bool buffer_full;
 	bool started;
-	uint32_t flags;
+};
+
+#define MAX_STREAMS	2
+
+struct ffmpeg_src {
+	AVFormatContext *avctx;
+	struct stream *streams[MAX_STREAMS];
+	int n_streams;
 };
 
 #define WAV_SPEAKER_FRONT_LEFT			0x1
@@ -523,7 +531,7 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 	}
 }
 
-static int wait_buffer_available(struct stream *stream)
+static void wait_buffer_available(struct stream *stream)
 {
 	dbg(" dec: %s: wait buffer", stream->name);
 
@@ -531,8 +539,6 @@ static int wait_buffer_available(struct stream *stream)
 	while (stream->buffer_full)
 		pthread_cond_wait(&stream->cond, &stream->lock);
 	pthread_mutex_unlock(&stream->lock);
-
-	return 0;
 }
 
 static int get_av_log_level(void)
@@ -625,14 +631,71 @@ stream_stop(struct stream *stream)
 }
 
 static int
-init_stream(struct stream *stream, uint32_t flags)
+stream_send_eos(struct stream *stream)
 {
+	qap_audio_buffer_t qap_buffer;
+	int ret;
+
+	if (!stream->started)
+		return 0;
+
+	memset(&qap_buffer, 0, sizeof (qap_buffer));
+	qap_buffer.buffer_parms.input_buf_params.flags = QAP_BUFFER_EOS;
+
+	ret = qap_module_process(stream->module, &qap_buffer);
+	if (ret) {
+		err("qap: %s: failed to send eos, err %d", stream->name, ret);
+		return 1;
+	}
+
+	return 0;
+}
+
+static void
+stream_destroy(struct stream *stream)
+{
+	if (!stream)
+		return;
+
+	if (stream->module && qap_module_deinit(stream->module))
+		err("qap: failed to deinit %s module", stream->name);
+
+	pthread_cond_destroy(&stream->cond);
+	pthread_mutex_destroy(&stream->lock);
+	free(stream);
+}
+
+static struct stream *
+stream_create(AVStream *avstream, qap_module_flags_t qap_flags)
+{
+	struct stream *stream;
+	const char *name;
 	qap_audio_format_t qap_format;
 	qap_module_config_t qap_mod_cfg;
 	AVCodecParameters *codecpar;
 
-	assert(stream->avstream != NULL);
-	codecpar = stream->avstream->codecpar;
+	switch (qap_flags) {
+	case QAP_MODULE_FLAG_PRIMARY:
+		name = "PRIMARY";
+		break;
+	case QAP_MODULE_FLAG_SECONDARY:
+		name = "SECONDARY";
+		break;
+	case QAP_MODULE_FLAG_SYSTEM_SOUND:
+		name = "SYSTEM_SOUND";
+		break;
+	case QAP_MODULE_FLAG_APP_SOUND:
+		name = "APP_SOUND";
+		break;
+	case QAP_MODULE_FLAG_OTT_SOUND:
+		name = "OTT_SOUND";
+		break;
+	default:
+		err("unknown qap module flags %x\n", qap_flags);
+		return NULL;
+	}
+
+	codecpar = avstream->codecpar;
 
 	switch (codecpar->codec_id) {
 	case AV_CODEC_ID_AC3:
@@ -660,12 +723,23 @@ init_stream(struct stream *stream, uint32_t flags)
 	default:
 		err("cannot decode %s format",
 		    avcodec_get_name(codecpar->codec_id));
-		return 1;
+		return NULL;
 	}
+
+	stream = calloc(1, sizeof *stream);
+	if (!stream)
+		return NULL;
+
+	stream->name = name;
+	stream->avstream = avstream;
+	stream->flags = qap_flags;
+
+	pthread_cond_init(&stream->cond, NULL);
+	pthread_mutex_init(&stream->lock, NULL);
 
 	memset(&qap_mod_cfg, 0, sizeof (qap_mod_cfg));
 	qap_mod_cfg.module_type = QAP_MODULE_DECODER;
-	qap_mod_cfg.flags = flags;
+	qap_mod_cfg.flags = qap_flags;
 	qap_mod_cfg.format = qap_format;
 
 	if (format_is_raw(qap_format)) {
@@ -677,28 +751,203 @@ init_stream(struct stream *stream, uint32_t flags)
 
 	if (qap_module_init(qap_session, &qap_mod_cfg, &stream->module)) {
 		err("qap: failed to init module");
-		return 1;
+		goto fail;
 	}
 
 	if (qap_module_set_callback(stream->module,
 				    handle_qap_module_event, stream)) {
 		err("qap: failed to set module callback");
-		return 1;
+		goto fail;
 	}
 
-	if (flags & QAP_MODULE_FLAG_PRIMARY)
-		stream->name = "PRIMARY";
-	else if (flags & QAP_MODULE_FLAG_SECONDARY)
-		stream->name = "SECONDARY";
-
-	stream->flags = flags;
-
 	if (stream_start(stream))
-		return 1;
+		goto fail;
 
+	return stream;
+
+fail:
+	stream_destroy(stream);
+	return NULL;
+}
+
+static void
+ffmpeg_src_destroy(struct ffmpeg_src *src)
+{
+	if (!src)
+		return;
+
+	for (int i = 0; i < MAX_STREAMS; i++)
+		stream_destroy(src->streams[i]);
+
+	if (src->avctx)
+		avformat_free_context(src->avctx);
+
+	free(src);
+}
+
+static struct ffmpeg_src *
+ffmpeg_src_create(const char *url)
+{
+	struct ffmpeg_src *src;
+	int ret;
+
+	src = calloc(1, sizeof *src);
+	if (!src)
+		return NULL;
+
+	ret = avformat_open_input(&src->avctx, url, NULL, NULL);
+	if (ret < 0) {
+		av_err(ret, "failed to open %s", url);
+		goto fail;
+	}
+
+	ret = avformat_find_stream_info(src->avctx, NULL);
+	if (ret < 0) {
+		av_err(ret, "failed to get streams info");
+		goto fail;
+	}
+
+	av_dump_format(src->avctx, -1, url, 0);
+
+	return src;
+
+fail:
+	ffmpeg_src_destroy(src);
+	return NULL;
+}
+
+static AVStream *
+ffmpeg_src_get_avstream(struct ffmpeg_src *src, int index)
+{
+	if (index < 0) {
+		index = av_find_best_stream(src->avctx, AVMEDIA_TYPE_AUDIO,
+					    -1, -1, NULL, 0);
+		if (index < 0)
+			return NULL;
+	}
+
+	if ((unsigned int)index >= src->avctx->nb_streams)
+		return NULL;
+
+	return src->avctx->streams[index];
+}
+
+static int
+ffmpeg_src_map_stream(struct ffmpeg_src *src, int index,
+		      qap_module_flags_t qap_flags)
+{
+	struct stream *stream;
+
+	if (index < 0 || (unsigned int)index >= src->avctx->nb_streams) {
+		err("stream index %d does not exist", index);
+		return -1;
+	}
+
+	if (src->n_streams >= MAX_STREAMS) {
+		err("too many streams");
+		return -1;
+	}
+
+	stream = stream_create(src->avctx->streams[index], qap_flags);
+	if (!stream)
+		return -1;
+
+	src->streams[src->n_streams++] = stream;
 	info("using stream %d as %s", stream->avstream->index, stream->name);
 
 	return 0;
+}
+
+static struct stream *
+ffmpeg_src_find_stream_by_index(struct ffmpeg_src *src, int index)
+{
+	for (int i = 0; i < src->n_streams; i++) {
+		if (src->streams[i] &&
+		    src->streams[i]->avstream->index == index)
+			return src->streams[i];
+	}
+
+	return NULL;
+}
+
+static int
+ffmpeg_src_read_frame(struct ffmpeg_src *src)
+{
+	qap_audio_buffer_t qap_buffer;
+	struct stream *stream;
+	AVPacket pkt;
+	int ret;
+
+	av_init_packet(&pkt);
+
+	/* get next audio frame from ffmpeg */
+	ret = av_read_frame(src->avctx, &pkt);
+	if (ret < 0) {
+		if (ret != AVERROR_EOF)
+			av_err(ret, "failed to read frame from input");
+		return ret;
+	}
+
+	/* find out which stream the frame belongs to */
+	stream = ffmpeg_src_find_stream_by_index(src, pkt.stream_index);
+	if (!stream) {
+		av_packet_unref(&pkt);
+		return 0;
+	}
+
+	/* push the audio frame to the decoder */
+	memset(&qap_buffer, 0, sizeof (qap_buffer));
+	qap_buffer.common_params.data = pkt.data;
+	qap_buffer.common_params.size = pkt.size;
+	qap_buffer.common_params.offset = 0;
+
+	if (pkt.pts == AV_NOPTS_VALUE) {
+		qap_buffer.common_params.timestamp = 0;
+		qap_buffer.buffer_parms.input_buf_params.flags =
+			QAP_BUFFER_NO_TSTAMP;
+	} else {
+		AVRational av_timebase = stream->avstream->time_base;
+		AVRational qap_timebase = { 1, 1000000 };
+		qap_buffer.common_params.timestamp =
+			av_rescale_q(pkt.pts, av_timebase, qap_timebase);
+		qap_buffer.buffer_parms.input_buf_params.flags =
+			QAP_BUFFER_TSTAMP;
+	}
+
+	dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
+	    stream->name, pkt.size, pkt.pts,
+	    qap_buffer.common_params.timestamp);
+
+	while (qap_buffer.common_params.offset <
+	       qap_buffer.common_params.size) {
+
+		pthread_mutex_lock(&stream->lock);
+		stream->buffer_full = true;
+		pthread_mutex_unlock(&stream->lock);
+
+		ret = qap_module_process(stream->module, &qap_buffer);
+		if (ret < 0) {
+			if (stream->flags & QAP_MODULE_FLAG_SECONDARY) {
+				av_packet_unref(&pkt);
+				err("in: %s full, drop", stream->name);
+				break;
+			}
+			wait_buffer_available(stream);
+		} else if (ret == 0) {
+			err("dec: %s: decoder returned zero size",
+			    stream->name);
+			break;
+		} else {
+			qap_buffer.common_params.offset += ret;
+			dbg("dec: %s: written %d bytes",
+			    stream->name, ret);
+		}
+	}
+
+	ret = pkt.size;
+	av_packet_unref(&pkt);
+
+	return ret;
 }
 
 enum output_type {
@@ -715,6 +964,7 @@ int main(int argc, char **argv)
 	const char *url;
 	int opt;
 	int ret;
+	int decode_err = 0;
 	int loops = 1;
 	int primary_stream_index = -1;
 	int secondary_stream_index = -1;
@@ -723,13 +973,11 @@ int main(int argc, char **argv)
 	char *kvpairs = NULL;
 	const char *qap_lib_name;
 	size_t written = 0;
-	struct stream streams[2];
 	FILE *output_stream;
+	struct ffmpeg_src *src;
 	qap_session_outputs_config_t qap_session_cfg;
 	qap_session_t qap_session_type;
-	qap_audio_buffer_t qap_buffer;
-	AVFormatContext *avctx = NULL;
-	AVPacket pkt;
+	AVStream *avstream;
 
 	output_stream = stdout;
 	qap_session_type = QAP_SESSION_BROADCAST;
@@ -818,60 +1066,28 @@ int main(int argc, char **argv)
 	url = argv[optind];
 
 	av_log_set_level(get_av_log_level());
-	av_register_all();
 	avformat_network_init();
 
 again:
 	info("QAP library version %u", qap_get_version());
-
-	memset(streams, 0, sizeof (streams));
-
-	for (int i = 0; i < 2; i++) {
-		pthread_cond_init(&streams[i].cond, NULL);
-		pthread_mutex_init(&streams[i].lock, NULL);
-	}
 
 	memset(qap_outputs, 0, sizeof (qap_outputs));
 	qap_outputs[0].stream = output_stream;
 	qap_eos_received = false;
 
 	/* init ffmpeg source and demuxer */
-	ret = avformat_open_input(&avctx, url, NULL, NULL);
-	if (ret < 0) {
-		av_err(ret, "failed to open %s", url);
+	src = ffmpeg_src_create(url);
+	if (!src)
 		return 1;
-	}
 
-	ret = avformat_find_stream_info(avctx, NULL);
-	if (ret < 0) {
-		av_err(ret, "failed to get streams info");
+	avstream = ffmpeg_src_get_avstream(src, primary_stream_index);
+	if (!avstream) {
+		err("primary stream not found in %s", url);
 		return 1;
-	}
-
-	av_dump_format(avctx, -1, url, 0);
-
-	/* find primary audio stream */
-	ret = av_find_best_stream(avctx, AVMEDIA_TYPE_AUDIO,
-				  primary_stream_index, -1,
-				  NULL, 0);
-	if (ret < 0) {
-		av_err(ret, "stream does not seem to contain audio");
-		return 1;
-	}
-
-	streams[0].avstream = avctx->streams[ret];
-
-	/* find secondary audio stream */
-	if (secondary_stream_index >= 0) {
-		if ((unsigned)secondary_stream_index >= avctx->nb_streams) {
-			av_err(ret, "secondary stream not available");
-			return 1;
-		}
-		streams[1].avstream = avctx->streams[secondary_stream_index];
 	}
 
 	/* load QAP library */
-	switch (streams[0].avstream->codecpar->codec_id) {
+	switch (avstream->codecpar->codec_id) {
 	case AV_CODEC_ID_AC3:
 	case AV_CODEC_ID_EAC3:
 	case AV_CODEC_ID_AAC:
@@ -886,7 +1102,7 @@ again:
 		break;
 	default:
 		err("cannot decode %s format",
-		    avcodec_get_name(streams[0].avstream->codecpar->codec_id));
+		    avcodec_get_name(avstream->codecpar->codec_id));
 		return 1;
 	}
 
@@ -953,134 +1169,62 @@ again:
 	}
 
 	/* create primary QAP module */
-	if (init_stream(&streams[0], QAP_MODULE_FLAG_PRIMARY))
+	ret = ffmpeg_src_map_stream(src, avstream->index,
+				    QAP_MODULE_FLAG_PRIMARY);
+	if (ret)
 		return 1;
 
 	/* create secondary QAP module */
-	if (streams[1].avstream != NULL &&
-	    init_stream(&streams[1], QAP_MODULE_FLAG_SECONDARY))
-		return 1;
-
-	av_init_packet(&pkt);
+	if (secondary_stream_index != -1) {
+		ret = ffmpeg_src_map_stream(src, secondary_stream_index,
+					    QAP_MODULE_FLAG_SECONDARY);
+		if (ret)
+			return 1;
+	}
 
 	signal(SIGINT, handle_quit);
 	signal(SIGTERM, handle_quit);
 
 	while (!quit) {
-		struct stream *stream;
+		ret = ffmpeg_src_read_frame(src);
+		if (ret == AVERROR_EOF)
+			break;
 
-		/* get next audio frame from ffmpeg */
-		ret = av_read_frame(avctx, &pkt);
-		if (ret == AVERROR_EOF) {
+		if (ret < 0) {
+			quit = 1;
+			decode_err = 1;
 			break;
 		}
 
-		if (ret < 0) {
-			av_err(ret, "failed to read frame from input");
-			return ret;
-		}
-
-		/* find out which stream the frame belongs to */
-		if (pkt.stream_index == streams[0].avstream->index) {
-			stream = &streams[0];
-		} else if (streams[1].avstream &&
-			   pkt.stream_index == streams[1].avstream->index) {
-			stream = &streams[1];
-		} else {
-			av_packet_unref(&pkt);
-			continue;
-		}
-
-		/* push the audio frame to the decoder */
-		memset(&qap_buffer, 0, sizeof (qap_buffer));
-		qap_buffer.common_params.data = pkt.data;
-		qap_buffer.common_params.size = pkt.size;
-		qap_buffer.common_params.offset = 0;
-
-		if (pkt.pts == AV_NOPTS_VALUE) {
-			qap_buffer.common_params.timestamp = 0;
-			qap_buffer.buffer_parms.input_buf_params.flags =
-				QAP_BUFFER_NO_TSTAMP;
-		} else {
-			AVRational av_timebase = stream->avstream->time_base;
-			AVRational qap_timebase = { 1, 1000000 };
-			qap_buffer.common_params.timestamp =
-				av_rescale_q(pkt.pts, av_timebase, qap_timebase);
-			qap_buffer.buffer_parms.input_buf_params.flags =
-				QAP_BUFFER_TSTAMP;
-		}
-
-		dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
-		    stream->name, pkt.size, pkt.pts,
-		    qap_buffer.common_params.timestamp);
-
-		while (qap_buffer.common_params.offset <
-		       qap_buffer.common_params.size) {
-
-			pthread_mutex_lock(&stream->lock);
-			stream->buffer_full = true;
-			pthread_mutex_unlock(&stream->lock);
-
-			ret = qap_module_process(stream->module, &qap_buffer);
-			if (ret < 0) {
-				if (stream->flags & QAP_MODULE_FLAG_SECONDARY) {
-					av_packet_unref(&pkt);
-					err("in: %s full, drop", stream->name);
-					break;
-				}
-				if (wait_buffer_available(stream) < 0)
-					return 1;
-			} else if (ret == 0) {
-				err("dec: %s: decoder returned zero size",
-				    stream->name);
-				break;
-			} else {
-				qap_buffer.common_params.offset += ret;
-				dbg("dec: %s: written %d bytes",
-				    stream->name, ret);
-			}
-		}
-
-		written += pkt.size;
-
-		av_packet_unref(&pkt);
+		written += ret;
 	}
 
-	/* send EOS and stop all streams */
-	for (int i = 0; i < 2; i++) {
-		if (!streams[i].module)
-			continue;
+	if (!decode_err) {
+		/* send EOS and stop all streams */
+		for (int i = 0; i < MAX_STREAMS; i++) {
+			if (!src->streams[i])
+				continue;
+			stream_send_eos(src->streams[i]);
+			stream_stop(src->streams[i]);
+		}
 
-		memset(&qap_buffer, 0, sizeof (qap_buffer));
-		qap_buffer.buffer_parms.input_buf_params.flags = QAP_BUFFER_EOS;
-		qap_module_process(streams[i].module, &qap_buffer);
+		info(" in: sent EOS");
 
-		stream_stop(&streams[i]);
+		/* wait EOS */
+		pthread_mutex_lock(&qap_lock);
+		while (!qap_eos_received)
+			pthread_cond_wait(&qap_cond, &qap_lock);
+		pthread_mutex_unlock(&qap_lock);
 	}
-
-	info(" in: sent EOS");
-
-	/* wait EOS */
-	pthread_mutex_lock(&qap_lock);
-	while (!qap_eos_received)
-		pthread_cond_wait(&qap_cond, &qap_lock);
-	pthread_mutex_unlock(&qap_lock);
 
 	info("written %zu bytes", written);
 
 	/* cleanup */
-	for (int i = 0; i < 2; i++) {
-		if (streams[i].module && qap_module_deinit(streams[i].module))
-			err("qap: failed to deinit module");
-		pthread_cond_destroy(&streams[i].cond);
-		pthread_mutex_destroy(&streams[i].lock);
-	}
+	ffmpeg_src_destroy(src);
+	src = NULL;
 
 	if (qap_session_close(qap_session))
 		err("qap: failed to close session");
-
-	avformat_free_context(avctx);
-	avctx = NULL;
 
 	if (!quit && --loops > 0)
 		goto again;
@@ -1091,5 +1235,5 @@ again:
 	if (output_stream != stdout)
 		fclose(output_stream);
 
-	return 0;
+	return decode_err;
 }
