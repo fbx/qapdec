@@ -87,6 +87,7 @@ struct stream {
 	pthread_cond_t cond;
 	bool buffer_full;
 	bool started;
+	uint64_t written_bytes;
 };
 
 #define MAX_STREAMS	2
@@ -945,9 +946,11 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 		if (ret < 0) {
 			if (stream->flags & QAP_MODULE_FLAG_SECONDARY) {
 				av_packet_unref(&pkt);
-				err("in: %s full, drop", stream->name);
+				err("dec: %s: full, drop", stream->name);
 				break;
 			}
+			dbg("dec: %s: full, %" PRIu64 " bytes written",
+			    stream->name, stream->written_bytes);
 			wait_buffer_available(stream);
 		} else if (ret == 0) {
 			err("dec: %s: decoder returned zero size",
@@ -955,8 +958,9 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 			break;
 		} else {
 			qap_buffer.common_params.offset += ret;
-			dbg("dec: %s: written %d bytes",
-			    stream->name, ret);
+			stream->written_bytes += ret;
+			dbg("dec: %s: written %d bytes, total %" PRIu64,
+			    stream->name, ret, stream->written_bytes);
 		}
 	}
 
@@ -974,8 +978,10 @@ ffmpeg_src_thread_func(void *userdata)
 
 	while (!quit && !primary_done) {
 		ret = ffmpeg_src_read_frame(src);
-		if (ret == AVERROR_EOF)
+		if (ret == AVERROR_EOF) {
+			info(" in: %s: EOS", src->streams[0]->name);
 			break;
+		}
 
 		if (ret < 0)
 			return (void *)1;
