@@ -58,6 +58,7 @@ qap_session_handle_t qap_session;
 
 int debug_level = 1;
 volatile bool quit;
+volatile bool primary_done;
 
 static struct qap_output_ctx {
 	const char *name;
@@ -849,10 +850,12 @@ static int
 ffmpeg_src_map_stream(struct ffmpeg_src *src, int index,
 		      qap_module_flags_t qap_flags)
 {
+	AVStream *avstream;
 	struct stream *stream;
 
-	if (index < 0 || (unsigned int)index >= src->avctx->nb_streams) {
-		err("stream index %d does not exist", index);
+	avstream = ffmpeg_src_get_avstream(src, index);
+	if (!avstream) {
+		err("stream index %d is not usable", index);
 		return -1;
 	}
 
@@ -861,12 +864,12 @@ ffmpeg_src_map_stream(struct ffmpeg_src *src, int index,
 		return -1;
 	}
 
-	stream = stream_create(src->avctx->streams[index], qap_flags);
+	stream = stream_create(avstream, qap_flags);
 	if (!stream)
 		return -1;
 
 	src->streams[src->n_streams++] = stream;
-	info("using stream %d as %s", stream->avstream->index, stream->name);
+	info("using stream %d as %s", avstream->index, stream->name);
 
 	return 0;
 }
@@ -969,7 +972,7 @@ ffmpeg_src_thread_func(void *userdata)
 	struct ffmpeg_src *src = userdata;
 	int ret;
 
-	while (!quit) {
+	while (!quit && !primary_done) {
 		ret = ffmpeg_src_read_frame(src);
 		if (ret == AVERROR_EOF)
 			break;
@@ -997,6 +1000,14 @@ ffmpeg_src_thread_join(struct ffmpeg_src *src)
 	return (intptr_t)ret;
 }
 
+enum module_type {
+	MODULE_PRIMARY,
+	MODULE_SYSTEM_SOUND,
+	MODULE_APP_SOUND,
+	MODULE_OTT_SOUND,
+	MAX_MODULES,
+};
+
 enum output_type {
 	OUTPUT_NONE,
 	OUTPUT_STEREO,
@@ -1018,6 +1029,9 @@ static void usage(void)
 		"  -c, --channels=<channels>    maximum number of channels to output\n"
 		"  -k, --kvpairs=<kvpairs>      pass kvpairs string to the decoder backend\n"
 		"  -l, --loops=<count>          number of times the stream will be decoded\n"
+		"      --sys-source=<url>       source for system sound module\n"
+		"      --app-source=<url>       source for app sound module\n"
+		"      --ott-source=<url>       source for ott sound module\n"
 		"\n");
 }
 
@@ -1029,14 +1043,20 @@ static const struct option long_options[] = {
 	{ "loops",             required_argument, 0, 'l' },
 	{ "output",            required_argument, 0, 'o' },
 	{ "session-type",      required_argument, 0, 't' },
+	{ "format",            required_argument, 0, 'f' },
 	{ "primary-stream",    required_argument, 0, 'p' },
 	{ "secondary-stream",  required_argument, 0, 's' },
+	{ "sys-source",        required_argument, 0, '1' },
+	{ "app-source",        required_argument, 0, '2' },
+	{ "ott-source",        required_argument, 0, '3' },
+	{ "sys-format",        required_argument, 0, '4' },
+	{ "app-format",        required_argument, 0, '5' },
+	{ "ott-format",        required_argument, 0, '6' },
 	{ 0,                   0,                 0,  0  }
 };
 
 int main(int argc, char **argv)
 {
-	const char *url;
 	int opt;
 	int ret;
 	int decode_err = 0;
@@ -1048,7 +1068,8 @@ int main(int argc, char **argv)
 	char *kvpairs = NULL;
 	const char *qap_lib_name;
 	FILE *output_stream = NULL;
-	struct ffmpeg_src *src;
+	struct ffmpeg_src *src[MAX_MODULES];
+	const char *src_url[MAX_MODULES] = { };
 	uint64_t src_duration;
 	uint64_t start_time;
 	uint64_t end_time;
@@ -1127,6 +1148,15 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			break;
+		case '1':
+			src_url[MODULE_SYSTEM_SOUND] = optarg;
+			break;
+		case '2':
+			src_url[MODULE_APP_SOUND] = optarg;
+			break;
+		case '3':
+			src_url[MODULE_OTT_SOUND] = optarg;
+			break;
 		case 'h':
 			usage();
 			return 0;
@@ -1140,13 +1170,8 @@ int main(int argc, char **argv)
 	if (outputs[0] == OUTPUT_NONE)
 		outputs[0] = OUTPUT_7DOT1;
 
-	if (optind >= argc) {
-		err("missing url to play\n");
-		usage();
-		return 1;
-	}
-
-	url = argv[optind];
+	if (optind < argc)
+		src_url[MODULE_PRIMARY] = argv[optind];
 
 	av_log_set_level(get_av_log_level());
 	avformat_network_init();
@@ -1159,36 +1184,51 @@ again:
 	qap_eos_received = false;
 
 	/* init ffmpeg source and demuxer */
-	src = ffmpeg_src_create(url);
-	if (!src)
-		return 1;
+	memset(src, 0, sizeof src);
+	for (int i = 0; i < MAX_MODULES; i++) {
+		if (!src_url[i])
+			continue;
 
-	src_duration = ffmpeg_src_get_duration(src);
+		src[i] = ffmpeg_src_create(src_url[i]);
+		if (!src[i])
+			return 1;
+	}
 
-	avstream = ffmpeg_src_get_avstream(src, primary_stream_index);
-	if (!avstream) {
-		err("primary stream not found in %s", url);
-		return 1;
+	if (src[MODULE_PRIMARY]) {
+		src_duration = ffmpeg_src_get_duration(src[MODULE_PRIMARY]);
+		avstream = ffmpeg_src_get_avstream(src[MODULE_PRIMARY],
+						   primary_stream_index);
+		if (!avstream) {
+			err("primary stream not found");
+			return 1;
+		}
+	} else {
+		avstream = NULL;
+		src_duration = 0;
 	}
 
 	/* load QAP library */
-	switch (avstream->codecpar->codec_id) {
-	case AV_CODEC_ID_AC3:
-	case AV_CODEC_ID_EAC3:
-	case AV_CODEC_ID_AAC:
-	case AV_CODEC_ID_AAC_LATM:
-	case AV_CODEC_ID_PCM_S16LE:
-	case AV_CODEC_ID_PCM_S24LE:
-	case AV_CODEC_ID_PCM_S32LE:
+	if (!avstream) {
 		qap_lib_name = QAP_LIB_DOLBY_MS12;
-		break;
-	case AV_CODEC_ID_DTS:
-		qap_lib_name = QAP_LIB_DTS_M8;
-		break;
-	default:
-		err("cannot decode %s format",
-		    avcodec_get_name(avstream->codecpar->codec_id));
-		return 1;
+	} else {
+		switch (avstream->codecpar->codec_id) {
+		case AV_CODEC_ID_AC3:
+		case AV_CODEC_ID_EAC3:
+		case AV_CODEC_ID_AAC:
+		case AV_CODEC_ID_AAC_LATM:
+		case AV_CODEC_ID_PCM_S16LE:
+		case AV_CODEC_ID_PCM_S24LE:
+		case AV_CODEC_ID_PCM_S32LE:
+			qap_lib_name = QAP_LIB_DOLBY_MS12;
+			break;
+		case AV_CODEC_ID_DTS:
+			qap_lib_name = QAP_LIB_DTS_M8;
+			break;
+		default:
+			err("cannot decode %s format",
+			    avcodec_get_name(avstream->codecpar->codec_id));
+			return 1;
+		}
 	}
 
 	if (!qap_lib) {
@@ -1287,16 +1327,42 @@ again:
 
 	start_time = get_time();
 
-	/* create primary QAP module */
-	ret = ffmpeg_src_map_stream(src, avstream->index,
-				    QAP_MODULE_FLAG_PRIMARY);
-	if (ret)
-		return 1;
+	if (src[MODULE_PRIMARY]) {
+		/* create primary QAP module */
+		ret = ffmpeg_src_map_stream(src[MODULE_PRIMARY],
+					    avstream->index,
+					    QAP_MODULE_FLAG_PRIMARY);
+		if (ret)
+			return 1;
 
-	/* create secondary QAP module */
-	if (secondary_stream_index != -1) {
-		ret = ffmpeg_src_map_stream(src, secondary_stream_index,
-					    QAP_MODULE_FLAG_SECONDARY);
+		/* create secondary QAP module */
+		if (secondary_stream_index != -1) {
+			ret = ffmpeg_src_map_stream(src[MODULE_PRIMARY],
+						    secondary_stream_index,
+						    QAP_MODULE_FLAG_SECONDARY);
+			if (ret)
+				return 1;
+		}
+	}
+
+	/* create PCM QAP modules */
+	if (src[MODULE_SYSTEM_SOUND]) {
+		ret = ffmpeg_src_map_stream(src[MODULE_SYSTEM_SOUND], -1,
+					    QAP_MODULE_FLAG_SYSTEM_SOUND);
+		if (ret)
+			return 1;
+	}
+
+	if (src[MODULE_APP_SOUND]) {
+		ret = ffmpeg_src_map_stream(src[MODULE_APP_SOUND], -1,
+					    QAP_MODULE_FLAG_APP_SOUND);
+		if (ret)
+			return 1;
+	}
+
+	if (src[MODULE_OTT_SOUND]) {
+		ret = ffmpeg_src_map_stream(src[MODULE_OTT_SOUND], -1,
+					    QAP_MODULE_FLAG_OTT_SOUND);
 		if (ret)
 			return 1;
 	}
@@ -1304,18 +1370,37 @@ again:
 	signal(SIGINT, handle_quit);
 	signal(SIGTERM, handle_quit);
 
-	ffmpeg_src_thread_start(src);
-	decode_err = ffmpeg_src_thread_join(src);
-	if (decode_err)
-		quit = 1;
+	primary_done = 0;
 
-	if (!decode_err) {
+	/* start input threads */
+	for (int i = 0; i < MAX_MODULES; i++) {
+		if (!src[i])
+			continue;
+		ffmpeg_src_thread_start(src[i]);
+	}
+
+	/* wait for input threads to finish */
+	if (src[MODULE_PRIMARY]) {
+		decode_err = ffmpeg_src_thread_join(src[MODULE_PRIMARY]);
+		if (decode_err)
+			quit = 1;
+		primary_done = 1;
+	}
+
+	for (int i = MODULE_SYSTEM_SOUND; i < MAX_MODULES; i++) {
+		if (!src[i])
+			continue;
+		ffmpeg_src_thread_join(src[i]);
+	}
+
+	if (src[MODULE_PRIMARY] && !decode_err) {
+		struct ffmpeg_src *psrc = src[MODULE_PRIMARY];
 		/* send EOS and stop all streams */
 		for (int i = 0; i < MAX_STREAMS; i++) {
-			if (!src->streams[i])
+			if (!psrc->streams[i])
 				continue;
-			stream_send_eos(src->streams[i]);
-			stream_stop(src->streams[i]);
+			stream_send_eos(psrc->streams[i]);
+			stream_stop(psrc->streams[i]);
 		}
 
 		info(" in: sent EOS");
@@ -1328,8 +1413,8 @@ again:
 	}
 
 	/* cleanup */
-	ffmpeg_src_destroy(src);
-	src = NULL;
+	for (int i = 0; i < MAX_MODULES; i++)
+		ffmpeg_src_destroy(src[i]);
 
 	if (qap_session_close(qap_session))
 		err("qap: failed to close session");
@@ -1355,7 +1440,7 @@ again:
 		     frames * 1000000 / duration);
 	}
 
-	if (!decode_err) {
+	if (src_duration > 0 && !decode_err) {
 		info("render speed: %.2fx realtime",
 		     (float)src_duration / (float)(end_time - start_time));
 	}
