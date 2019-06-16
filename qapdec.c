@@ -947,10 +947,13 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 
 	while (qap_buffer.common_params.offset <
 	       qap_buffer.common_params.size) {
+		uint64_t t;
 
 		pthread_mutex_lock(&stream->lock);
 		stream->buffer_full = true;
 		pthread_mutex_unlock(&stream->lock);
+
+		t = get_time();
 
 		ret = qap_module_process(stream->module, &qap_buffer);
 		if (ret < 0) {
@@ -969,8 +972,9 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 		} else {
 			qap_buffer.common_params.offset += ret;
 			stream->written_bytes += ret;
-			dbg("dec: %s: written %d bytes, total %" PRIu64,
-			    stream->name, ret, stream->written_bytes);
+			dbg("dec: %s: written %d bytes in %dus, total %" PRIu64,
+			    stream->name, ret, (int)(get_time() - t),
+			    stream->written_bytes);
 		}
 	}
 
