@@ -12,6 +12,7 @@
 
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavdevice/avdevice.h>
 
 #define print(l, msg, ...)						\
 	do {								\
@@ -794,16 +795,25 @@ ffmpeg_src_destroy(struct ffmpeg_src *src)
 }
 
 static struct ffmpeg_src *
-ffmpeg_src_create(const char *url)
+ffmpeg_src_create(const char *url, const char *format)
 {
+	AVInputFormat *input_format = NULL;
 	struct ffmpeg_src *src;
 	int ret;
+
+	if (format) {
+		input_format = av_find_input_format(format);
+		if (!input_format) {
+			err("input format %s not supported", format);
+			return NULL;
+		}
+	}
 
 	src = calloc(1, sizeof *src);
 	if (!src)
 		return NULL;
 
-	ret = avformat_open_input(&src->avctx, url, NULL, NULL);
+	ret = avformat_open_input(&src->avctx, url, input_format, NULL);
 	if (ret < 0) {
 		av_err(ret, "failed to open %s", url);
 		goto fail;
@@ -1028,6 +1038,7 @@ static void usage(void)
 	fprintf(stderr, "usage: qapdec [OPTS] <input>\n"
 		"Where OPTS is a combination of:\n"
 		"  -v, --verbose                increase debug verbosity\n"
+		"  -f, --format                 force ffmpeg input format\n"
 		"  -p, --primary-stream=<n>     audio primary stream number to decode\n"
 		"  -s, --secondary-stream=<n>   audio secondary stream number to decode\n"
 		"  -t, --session-type=<type>    session type (broadcast, decode, encode, ott)\n"
@@ -1038,6 +1049,12 @@ static void usage(void)
 		"      --sys-source=<url>       source for system sound module\n"
 		"      --app-source=<url>       source for app sound module\n"
 		"      --ott-source=<url>       source for ott sound module\n"
+		"      --sys-format=<fmt>       format for system sound module\n"
+		"      --app-format=<fmt>       format for app sound module\n"
+		"      --ott-format=<fmt>       format for ott sound module\n"
+		"\n"
+		"Example usage to feed generate sine wave audio and decode an AC3 file:\n"
+		"  qapdec -c 2 --sys-format lavfi --sys-source sine /data/test.ac3\n"
 		"\n");
 }
 
@@ -1076,6 +1093,7 @@ int main(int argc, char **argv)
 	FILE *output_stream = NULL;
 	struct ffmpeg_src *src[MAX_MODULES];
 	const char *src_url[MAX_MODULES] = { };
+	const char *src_format[MAX_MODULES] = { };
 	uint64_t src_duration;
 	uint64_t start_time;
 	uint64_t end_time;
@@ -1087,7 +1105,7 @@ int main(int argc, char **argv)
 
 	qap_session_type = QAP_SESSION_BROADCAST;
 
-	while ((opt = getopt_long(argc, argv, "c:hk:l:o:p:s:t:v",
+	while ((opt = getopt_long(argc, argv, "c:f:hk:l:o:p:s:t:v",
 				  long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'c':
@@ -1120,6 +1138,9 @@ int main(int argc, char **argv)
 			break;
 		case 'l':
 			loops = atoi(optarg);
+			break;
+		case 'f':
+			src_format[MODULE_PRIMARY] = optarg;
 			break;
 		case 'p':
 			primary_stream_index = atoi(optarg);
@@ -1163,6 +1184,15 @@ int main(int argc, char **argv)
 		case '3':
 			src_url[MODULE_OTT_SOUND] = optarg;
 			break;
+		case '4':
+			src_format[MODULE_SYSTEM_SOUND] = optarg;
+			break;
+		case '5':
+			src_format[MODULE_APP_SOUND] = optarg;
+			break;
+		case '6':
+			src_format[MODULE_OTT_SOUND] = optarg;
+			break;
 		case 'h':
 			usage();
 			return 0;
@@ -1181,6 +1211,7 @@ int main(int argc, char **argv)
 
 	av_log_set_level(get_av_log_level());
 	avformat_network_init();
+	avdevice_register_all();
 
 again:
 	info("QAP library version %u", qap_get_version());
@@ -1195,7 +1226,7 @@ again:
 		if (!src_url[i])
 			continue;
 
-		src[i] = ffmpeg_src_create(src_url[i]);
+		src[i] = ffmpeg_src_create(src_url[i], src_format[i]);
 		if (!src[i])
 			return 1;
 	}

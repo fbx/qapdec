@@ -7,7 +7,7 @@ PKG_CONFIG ?= pkg-config
 SOURCES = qapdec.c
 OBJECTS := $(SOURCES:.c=.o)
 EXEC = qapdec
-PKGS = qap_wrapper libavformat libavcodec libavutil
+PKGS = qap_wrapper libavformat libavcodec libavdevice libavutil
 
 cppflags = -D_DEFAULT_SOURCE $(CPPFLAGS)
 cflags = -std=gnu11 -Wall -pthread \
