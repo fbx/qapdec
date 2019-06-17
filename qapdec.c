@@ -58,6 +58,7 @@ qap_lib_handle_t qap_lib;
 qap_session_handle_t qap_session;
 
 int debug_level = 1;
+bool opt_render_realtime;
 volatile bool quit;
 volatile bool primary_done;
 
@@ -71,6 +72,7 @@ static struct qap_output_ctx {
 	int wav_block_size;
 	uint64_t last_ts;
 	uint64_t total_bytes;
+	uint64_t start_time;
 	FILE *stream;
 } qap_outputs[MAX_OUTPUTS];
 
@@ -78,6 +80,12 @@ static pthread_mutex_t qap_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
 
 static bool qap_eos_received;
+
+enum stream_state {
+	STREAM_STATE_STOPPED,
+	STREAM_STATE_STARTED,
+	STREAM_STATE_PAUSED,
+};
 
 struct stream {
 	const char *name;
@@ -87,7 +95,8 @@ struct stream {
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 	bool buffer_full;
-	bool started;
+	enum stream_state state;
+	uint64_t start_time;
 	uint64_t written_bytes;
 };
 
@@ -319,6 +328,16 @@ static const char *audio_format_to_str(qap_audio_format_t format)
 	return "unknown";
 }
 
+static int
+format_is_raw(qap_audio_format_t format)
+{
+	return format == QAP_AUDIO_FORMAT_PCM_16_BIT ||
+		format == QAP_AUDIO_FORMAT_PCM_32_BIT ||
+		format == QAP_AUDIO_FORMAT_PCM_8_24_BIT ||
+		format == QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED ||
+		format == QAP_AUDIO_FORMAT_AAC;
+}
+
 static const char *audio_channel_to_str(qap_pcm_chmap channel)
 {
 	switch (channel) {
@@ -389,8 +408,8 @@ static struct qap_output_ctx *get_qap_output(int index)
 
 static void handle_buffer(qap_audio_buffer_t *buffer)
 {
-	struct qap_output_ctx *output =
-		get_qap_output(buffer->buffer_parms.output_buf_params.output_id);
+	int id = buffer->buffer_parms.output_buf_params.output_id;
+	struct qap_output_ctx *output = get_qap_output(id);
 
 	dbg("qap: out %s: pcm buffer size=%u pts=%" PRIi64
 	    " duration=%" PRIi64 " last_diff=%" PRIi64,
@@ -404,6 +423,27 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	output->last_ts = buffer->common_params.timestamp;
 	output->total_bytes += buffer->common_params.size;
 	output_write_buffer(output, &buffer->common_params);
+
+	/* only wait on the first output */
+	if (opt_render_realtime && id == AUDIO_OUTPUT_ID_BASE) {
+		uint64_t now, pts;
+		int64_t delay;
+
+		now = get_time() - output->start_time;
+		pts = output->total_bytes * 1000000 /
+			(output->config.bit_width / 8 *
+			 output->config.channels) /
+			output->config.sample_rate;
+		delay = pts - now;
+
+		if (delay <= 0)
+			return;
+
+		dbg("qap: out %s: wait %" PRIi64 "us for sync",
+		    output->name, delay);
+
+		usleep(delay);
+	}
 }
 
 static void handle_output_config(qap_output_buff_params_t *out_buffer)
@@ -420,6 +460,9 @@ static void handle_output_config(qap_output_buff_params_t *out_buffer)
 
 	output->config = *cfg;
 
+	if (!output->start_time)
+		output->start_time = get_time();
+
 	output_write_header(output);
 }
 
@@ -432,9 +475,6 @@ static void handle_output_delay(qap_output_delay_t *delay)
 	    output->delay.buffering_delay == delay->buffering_delay &&
 	    output->delay.non_main_data_length == delay->non_main_data_length &&
 	    output->delay.non_main_data_offset == delay->non_main_data_offset)
-		return;
-
-	if (output->delay.algo_delay == delay->algo_delay)
 		log_level = 3;
 	else
 		log_level = 2;
@@ -585,21 +625,11 @@ static void handle_quit(int sig)
 }
 
 static int
-format_is_raw(qap_audio_format_t format)
-{
-	return format == QAP_AUDIO_FORMAT_PCM_16_BIT ||
-		format == QAP_AUDIO_FORMAT_PCM_32_BIT ||
-		format == QAP_AUDIO_FORMAT_PCM_8_24_BIT ||
-		format == QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED ||
-		format == QAP_AUDIO_FORMAT_AAC;
-}
-
-static int
 stream_start(struct stream *stream)
 {
 	int ret;
 
-	if (stream->started)
+	if (stream->state == STREAM_STATE_STARTED)
 		return 0;
 
 	info("qap: in %s: start", stream->name);
@@ -611,7 +641,29 @@ stream_start(struct stream *stream)
 		return 1;
 	}
 
-	stream->started = true;
+	stream->state = STREAM_STATE_STARTED;
+
+	return 0;
+}
+
+static int __attribute__((unused))
+stream_pause(struct stream *stream)
+{
+	int ret;
+
+	if (stream->state != STREAM_STATE_STARTED)
+		return 0;
+
+	info("qap: in %s: pause", stream->name);
+
+	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_PAUSE,
+			     0, NULL, NULL, NULL);
+	if (ret) {
+		err("qap: QAP_SESSION_CMD_PAUSE command failed");
+		return 1;
+	}
+
+	stream->state = STREAM_STATE_PAUSED;
 
 	return 0;
 }
@@ -621,7 +673,7 @@ stream_stop(struct stream *stream)
 {
 	int ret;
 
-	if (!stream->started)
+	if (stream->state == STREAM_STATE_STOPPED)
 		return 0;
 
 	info("qap: in %s: stop", stream->name);
@@ -633,7 +685,7 @@ stream_stop(struct stream *stream)
 		return 1;
 	}
 
-	stream->started = false;
+	stream->state = STREAM_STATE_STOPPED;
 
 	return 0;
 }
@@ -644,7 +696,7 @@ stream_send_eos(struct stream *stream)
 	qap_audio_buffer_t qap_buffer;
 	int ret;
 
-	if (!stream->started)
+	if (stream->state == STREAM_STATE_STOPPED)
 		return 0;
 
 	memset(&qap_buffer, 0, sizeof (qap_buffer));
@@ -922,6 +974,9 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 		return 0;
 	}
 
+	if (stream->written_bytes == 0)
+		stream->start_time = get_time();
+
 	/* push the audio frame to the decoder */
 	memset(&qap_buffer, 0, sizeof (qap_buffer));
 	qap_buffer.common_params.data = pkt.data;
@@ -939,6 +994,21 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 			av_rescale_q(pkt.pts, av_timebase, qap_timebase);
 		qap_buffer.buffer_parms.input_buf_params.flags =
 			QAP_BUFFER_TSTAMP;
+	}
+
+	if (opt_render_realtime &&
+	    qap_buffer.buffer_parms.input_buf_params.flags == QAP_BUFFER_TSTAMP) {
+		uint64_t now;
+		int64_t delay;
+
+		now = get_time() - stream->start_time;
+		delay = qap_buffer.common_params.timestamp - now - 10000;
+
+		if (delay > 0) {
+			dbg("dec: %s: wait %" PRIi64 "us",
+			    stream->name, delay);
+			usleep(delay);
+		}
 	}
 
 	dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
@@ -1050,6 +1120,7 @@ static void usage(void)
 		"  -c, --channels=<channels>    maximum number of channels to output\n"
 		"  -k, --kvpairs=<kvpairs>      pass kvpairs string to the decoder backend\n"
 		"  -l, --loops=<count>          number of times the stream will be decoded\n"
+		"      --realtime               sync input feeding and output render to pts\n"
 		"      --sys-source=<url>       source for system sound module\n"
 		"      --app-source=<url>       source for app sound module\n"
 		"      --ott-source=<url>       source for ott sound module\n"
@@ -1073,6 +1144,7 @@ static const struct option long_options[] = {
 	{ "format",            required_argument, 0, 'f' },
 	{ "primary-stream",    required_argument, 0, 'p' },
 	{ "secondary-stream",  required_argument, 0, 's' },
+	{ "realtime",          no_argument,       0, '0' },
 	{ "sys-source",        required_argument, 0, '1' },
 	{ "app-source",        required_argument, 0, '2' },
 	{ "ott-source",        required_argument, 0, '3' },
@@ -1178,6 +1250,9 @@ int main(int argc, char **argv)
 				usage();
 				return 1;
 			}
+			break;
+		case '0':
+			opt_render_realtime = 1;
 			break;
 		case '1':
 			src_url[MODULE_SYSTEM_SOUND] = optarg;
