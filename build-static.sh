@@ -53,7 +53,7 @@ p "FFMPEG"
 
 cd "$D"
 
-pkg="ffmpeg-4.0.2"
+pkg="ffmpeg-4.1"
 archive="$pkg.tar.bz2"
 S="$D/src/$pkg"
 
@@ -85,8 +85,7 @@ if [ ! -e Makefile ]; then
         --disable-txtpages \
         --disable-debug \
         --disable-hwaccels \
-        --disable-devices \
-        --disable-filters \
+        --disable-outdevs \
         --disable-iconv \
         --disable-zlib \
         --disable-bzlib \
@@ -97,18 +96,22 @@ if [ ! -e Makefile ]; then
         --disable-gpl \
         --disable-swscale \
         --disable-swresample \
-        --disable-avdevice \
-        --disable-avfilter \
+        --enable-avdevice \
+        --enable-avfilter \
         --enable-small \
         --disable-ffmpeg \
         --disable-ffplay \
         --disable-ffprobe \
+        --disable-indevs \
+        --enable-indev=lavfi \
         --disable-encoders \
         --disable-decoders \
         --enable-decoder=aac \
         --enable-decoder=ac3 \
         --enable-decoder=eac3 \
         --enable-decoder=dca \
+        --disable-filters \
+        --enable-filter=sine \
         --disable-muxers \
         --disable-demuxers \
         --enable-demuxer=aac \
