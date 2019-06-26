@@ -14,7 +14,7 @@ cflags = -std=gnu11 -Wall -pthread \
   $(shell $(PKG_CONFIG) --cflags $(PKGS)) \
   $(CFLAGS)
 
-ldflags = $(LDFLAGS)
+ldflags = $(LDFLAGS) -pthread
 ldlibs = $(shell $(PKG_CONFIG) --libs $(PKGS))
 
 all: $(EXEC)
