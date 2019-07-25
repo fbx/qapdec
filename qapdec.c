@@ -23,6 +23,9 @@
 #define err(msg, ...) \
 	print(1, "error: " msg "\n", ##__VA_ARGS__)
 
+#define notice(msg, ...) \
+	print(1, msg "\n", ##__VA_ARGS__)
+
 #define info(msg, ...) \
 	print(2, msg "\n", ##__VA_ARGS__)
 
@@ -1586,7 +1589,7 @@ again:
 	}
 
 	if (src_duration > 0 && !decode_err) {
-		info("render speed: %.2fx realtime",
+		notice("render speed: %.2fx realtime",
 		     (float)src_duration / (float)(end_time - start_time));
 	}
 
