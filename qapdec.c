@@ -1090,6 +1090,32 @@ ffmpeg_src_thread_join(struct ffmpeg_src *src)
 	return (intptr_t)ret;
 }
 
+static void
+handle_log_msg(qap_log_level_t level, const char *msg)
+{
+	int dbg_level;
+	int len;
+
+	switch (level) {
+	case QAP_LOG_ERROR:
+		dbg_level = 1;
+		break;
+	case QAP_LOG_INFO:
+		dbg_level = 3;
+		break;
+	default:
+	case QAP_LOG_DEBUG:
+		dbg_level = 4;
+		break;
+	}
+
+	len = strlen(msg);
+	while (msg[len - 1] == '\n')
+		len--;
+
+	print(dbg_level, "%.*s\n", len, msg);
+}
+
 enum module_type {
 	MODULE_PRIMARY,
 	MODULE_SYSTEM_SOUND,
@@ -1353,6 +1379,9 @@ again:
 			err("qap: failed to load library %s", qap_lib_name);
 			return 1;
 		}
+
+		qap_lib_set_log_callback(qap_lib, handle_log_msg);
+		qap_lib_set_log_level(qap_lib, debug_level - 1);
 	}
 
 	/* init QAP session */
