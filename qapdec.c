@@ -332,12 +332,18 @@ static const char *audio_format_to_str(qap_audio_format_t format)
 }
 
 static int
-format_is_raw(qap_audio_format_t format)
+format_is_pcm(qap_audio_format_t format)
 {
 	return format == QAP_AUDIO_FORMAT_PCM_16_BIT ||
 		format == QAP_AUDIO_FORMAT_PCM_32_BIT ||
 		format == QAP_AUDIO_FORMAT_PCM_8_24_BIT ||
-		format == QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED ||
+		format == QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED;
+}
+
+static int
+format_is_raw(qap_audio_format_t format)
+{
+	return format_is_pcm(format) ||
 		format == QAP_AUDIO_FORMAT_AAC;
 }
 
@@ -734,6 +740,7 @@ stream_create(AVStream *avstream, qap_module_flags_t qap_flags)
 {
 	struct stream *stream;
 	const char *name;
+	char channel_layout_desc[32];
 	qap_audio_format_t qap_format;
 	qap_module_config_t qap_mod_cfg;
 	AVCodecParameters *codecpar;
@@ -805,6 +812,28 @@ stream_create(AVStream *avstream, qap_module_flags_t qap_flags)
 	qap_mod_cfg.module_type = QAP_MODULE_DECODER;
 	qap_mod_cfg.flags = qap_flags;
 	qap_mod_cfg.format = qap_format;
+
+	av_get_channel_layout_string(channel_layout_desc,
+				     sizeof (channel_layout_desc),
+				     codecpar->channels,
+				     codecpar->channel_layout);
+
+	if (format_is_pcm(qap_format)) {
+		notice("use stream %d as %s, %s, %d Hz, %s, %d bits, %" PRIi64 " kb/s",
+		       avstream->id, stream->name,
+		       avcodec_get_name(codecpar->codec_id),
+		       codecpar->sample_rate,
+		       channel_layout_desc,
+		       codecpar->bits_per_coded_sample,
+		       codecpar->bit_rate / 1000);
+	} else {
+		notice("use stream %d as %s, %s, %d Hz, %s, %" PRIi64 " kb/s",
+		       avstream->id, stream->name,
+		       avcodec_get_name(codecpar->codec_id),
+		       codecpar->sample_rate,
+		       channel_layout_desc,
+		       codecpar->bit_rate / 1000);
+	}
 
 	if (format_is_raw(qap_format)) {
 		qap_mod_cfg.channels = codecpar->channels;
@@ -880,8 +909,6 @@ ffmpeg_src_create(const char *url, const char *format)
 		goto fail;
 	}
 
-	av_dump_format(src->avctx, -1, url, 0);
-
 	return src;
 
 fail:
@@ -935,7 +962,6 @@ ffmpeg_src_map_stream(struct ffmpeg_src *src, int index,
 		return -1;
 
 	src->streams[src->n_streams++] = stream;
-	info("using stream %d as %s", avstream->index, stream->name);
 
 	return 0;
 }
