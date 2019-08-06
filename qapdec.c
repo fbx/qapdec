@@ -1056,11 +1056,6 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 
 		ret = qap_module_process(stream->module, &qap_buffer);
 		if (ret < 0) {
-			if (stream->flags & QAP_MODULE_FLAG_SECONDARY) {
-				av_packet_unref(&pkt);
-				err("dec: %s: full, drop", stream->name);
-				break;
-			}
 			dbg("dec: %s: full, %" PRIu64 " bytes written",
 			    stream->name, stream->written_bytes);
 			wait_buffer_available(stream);
@@ -1147,6 +1142,7 @@ handle_log_msg(qap_log_level_t level, const char *msg)
 
 enum module_type {
 	MODULE_PRIMARY,
+	MODULE_SECONDARY,
 	MODULE_SYSTEM_SOUND,
 	MODULE_APP_SOUND,
 	MODULE_OTT_SOUND,
@@ -1176,6 +1172,7 @@ static void usage(void)
 		"  -k, --kvpairs=<kvpairs>      pass kvpairs string to the decoder backend\n"
 		"  -l, --loops=<count>          number of times the stream will be decoded\n"
 		"      --realtime               sync input feeding and output render to pts\n"
+		"      --sec-source=<url>       source for assoc/main2 module\n"
 		"      --sys-source=<url>       source for system sound module\n"
 		"      --app-source=<url>       source for app sound module\n"
 		"      --ott-source=<url>       source for ott sound module\n"
@@ -1206,6 +1203,7 @@ static const struct option long_options[] = {
 	{ "sys-format",        required_argument, 0, '4' },
 	{ "app-format",        required_argument, 0, '5' },
 	{ "ott-format",        required_argument, 0, '6' },
+	{ "sec-source",        required_argument, 0, '7' },
 	{ 0,                   0,                 0,  0  }
 };
 
@@ -1327,6 +1325,9 @@ int main(int argc, char **argv)
 		case '6':
 			src_format[MODULE_OTT_SOUND] = optarg;
 			break;
+		case '7':
+			src_url[MODULE_SECONDARY] = optarg;
+			break;
 		case 'h':
 			usage();
 			return 0;
@@ -1335,6 +1336,12 @@ int main(int argc, char **argv)
 			usage();
 			return 1;
 		}
+	}
+
+	if (src_url[MODULE_SECONDARY] &&
+	    secondary_stream_index != -1) {
+		err("cannot set both secondary stream index and url");
+		return 1;
 	}
 
 	if (outputs[0] == OUTPUT_NONE)
@@ -1517,6 +1524,14 @@ again:
 			if (ret)
 				return 1;
 		}
+	}
+
+	if (src[MODULE_SECONDARY]) {
+		/* create assoc/main2 QAP module */
+		ret = ffmpeg_src_map_stream(src[MODULE_SECONDARY], -1,
+					    QAP_MODULE_FLAG_SECONDARY);
+		if (ret)
+			return 1;
 	}
 
 	/* create PCM QAP modules */
