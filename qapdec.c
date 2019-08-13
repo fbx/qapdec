@@ -47,7 +47,6 @@
 # define QAP_LIB_DOLBY_MS12 "/usr/lib64/libdolby_ms12_wrapper.so"
 #endif
 
-#define MAX_OUTPUTS 3
 #define AUDIO_OUTPUT_ID_BASE 0x100
 
 /* MS12 bitstream output mode */
@@ -64,6 +63,16 @@ int debug_level = 1;
 bool opt_render_realtime;
 volatile bool quit;
 volatile bool primary_done;
+
+enum output_type {
+	OUTPUT_NONE = -1,
+	OUTPUT_STEREO = 0,
+	OUTPUT_5DOT1,
+	OUTPUT_7DOT1,
+	OUTPUT_AC3,
+	OUTPUT_EAC3,
+	MAX_OUTPUTS,
+};
 
 static struct qap_output_ctx {
 	const char *name;
@@ -83,6 +92,7 @@ static pthread_mutex_t qap_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
 
 static bool qap_eos_received;
+static const char *qap_lib_name;
 
 enum stream_state {
 	STREAM_STATE_STOPPED,
@@ -433,8 +443,8 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	output->total_bytes += buffer->common_params.size;
 	output_write_buffer(output, &buffer->common_params);
 
-	/* only wait on the first output */
-	if (opt_render_realtime && id == AUDIO_OUTPUT_ID_BASE) {
+	/* only wait on PCM outputs */
+	if (opt_render_realtime && format_is_pcm(output->config.format)) {
 		uint64_t now, pts;
 		int64_t delay;
 
@@ -1149,14 +1159,107 @@ enum module_type {
 	MAX_MODULES,
 };
 
-enum output_type {
-	OUTPUT_NONE,
-	OUTPUT_STEREO,
-	OUTPUT_5DOT1,
-	OUTPUT_7DOT1,
-	OUTPUT_AC3,
-	OUTPUT_EAC3,
-};
+static void
+init_outputs(void)
+{
+	for (int i = 0; i < MAX_OUTPUTS; i++) {
+		struct qap_output_ctx *output = &qap_outputs[i];
+
+		memset(output, 0, sizeof (*output));
+
+		switch (i) {
+		case OUTPUT_STEREO:
+			output->name = "STEREO";
+			break;
+		case OUTPUT_5DOT1:
+			output->name = "5DOT1";
+			break;
+		case OUTPUT_7DOT1:
+			output->name = "7DOT1";
+			break;
+		case OUTPUT_AC3:
+			output->name = "AC3";
+			break;
+		case OUTPUT_EAC3:
+			output->name = "EAC3";
+			break;
+		}
+	}
+}
+
+static int
+configure_outputs(int num_outputs, enum output_type *outputs)
+{
+	qap_session_outputs_config_t qap_session_cfg;
+	uint32_t outputs_present = 0;
+	int ret;
+
+	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
+
+	for (int i = 0; i < num_outputs; i++) {
+		enum output_type id = outputs[i];
+		qap_output_config_t *output_cfg =
+			qap_session_cfg.output_config +
+			qap_session_cfg.num_output;
+
+		switch (id) {
+		case OUTPUT_STEREO:
+			output_cfg->channels = 2;
+			break;
+		case OUTPUT_5DOT1:
+			output_cfg->channels = 6;
+			break;
+		case OUTPUT_7DOT1:
+			output_cfg->channels = 8;
+			break;
+		case OUTPUT_AC3:
+			output_cfg->format = QAP_AUDIO_FORMAT_AC3;
+			break;
+		case OUTPUT_EAC3:
+			output_cfg->format = QAP_AUDIO_FORMAT_EAC3;
+			break;
+		default:
+			continue;
+		}
+
+		outputs_present |= 1 << id;
+		output_cfg->id = AUDIO_OUTPUT_ID_BASE + id;
+		qap_session_cfg.num_output++;
+	}
+
+	/* set BS mode for MS12 */
+	if (!strcmp(qap_lib_name, QAP_LIB_DOLBY_MS12)) {
+		int bs_mode;
+		char params[32];
+
+		if (outputs_present & (1 << OUTPUT_EAC3))
+			bs_mode = MS12_BS_OUT_MODE_DDP;
+		else if (outputs_present & (1 << OUTPUT_AC3))
+			bs_mode = MS12_BS_OUT_MODE_DD;
+		else
+			bs_mode = MS12_BS_OUT_MODE_PCM;
+
+		sprintf(params, "%s=%d", MS12_KEY_BS_OUT_MODE, bs_mode);
+
+		ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_KVPAIRS,
+				      strlen(params) + 1, params, NULL, NULL);
+		if (ret) {
+			err("qap: QAP_SESSION_CMD_SET_KVPAIRS command failed");
+			return 1;
+		}
+	}
+
+	/* setup outputs */
+	ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_OUTPUTS,
+			      sizeof (qap_session_cfg), &qap_session_cfg,
+			      NULL, NULL);
+	if (ret) {
+		err("qap: QAP_SESSION_CMD_SET_CONFIG command failed");
+		return 1;
+	}
+
+	return 0;
+}
 
 static void usage(void)
 {
@@ -1215,10 +1318,9 @@ int main(int argc, char **argv)
 	int loops = 1;
 	int primary_stream_index = -1;
 	int secondary_stream_index = -1;
-	enum output_type outputs[MAX_OUTPUTS] = { };
-	int num_outputs = 0;
+	enum output_type outputs[2];
+	unsigned int num_outputs = 0;
 	char *kvpairs = NULL;
-	const char *qap_lib_name;
 	FILE *output_stream = NULL;
 	struct ffmpeg_src *src[MAX_MODULES];
 	const char *src_url[MAX_MODULES] = { };
@@ -1226,9 +1328,6 @@ int main(int argc, char **argv)
 	uint64_t src_duration;
 	uint64_t start_time;
 	uint64_t end_time;
-	uint32_t outputs_present;
-	int bs_mode;
-	qap_session_outputs_config_t qap_session_cfg;
 	qap_session_t qap_session_type;
 	AVStream *avstream;
 
@@ -1238,7 +1337,7 @@ int main(int argc, char **argv)
 				  long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'c':
-			if (num_outputs >= MAX_OUTPUTS) {
+			if (num_outputs >= ARRAY_SIZE(outputs)) {
 				err("too many outputs");
 				usage();
 				return 1;
@@ -1344,8 +1443,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (outputs[0] == OUTPUT_NONE)
-		outputs[0] = OUTPUT_7DOT1;
+	if (num_outputs == 0)
+		outputs[num_outputs++] = OUTPUT_5DOT1;
 
 	if (optind < argc)
 		src_url[MODULE_PRIMARY] = argv[optind];
@@ -1354,11 +1453,12 @@ int main(int argc, char **argv)
 	avformat_network_init();
 	avdevice_register_all();
 
+	init_outputs();
+	qap_outputs[outputs[0]].stream = output_stream;
+
 again:
 	info("QAP library version %u", qap_get_version());
 
-	memset(qap_outputs, 0, sizeof (qap_outputs));
-	qap_outputs[0].stream = output_stream;
 	qap_eos_received = false;
 
 	/* init ffmpeg source and demuxer */
@@ -1429,72 +1529,7 @@ again:
 
 	qap_session_set_callback(qap_session, handle_qap_session_event, NULL);
 
-	outputs_present = 0;
-	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
-	for (int i = 0; i < MAX_OUTPUTS; i++) {
-		struct qap_output_ctx *output =
-			&qap_outputs[qap_session_cfg.num_output];
-		qap_output_config_t *output_cfg =
-			&qap_session_cfg.output_config[qap_session_cfg.num_output];
-		switch (outputs[i]) {
-		case OUTPUT_NONE:
-			continue;
-		case OUTPUT_STEREO:
-			output->name = "STEREO";
-			output_cfg->channels = 2;
-			break;
-		case OUTPUT_5DOT1:
-			output->name = "5DOT1";
-			output_cfg->channels = 6;
-			break;
-		case OUTPUT_7DOT1:
-			output->name = "7DOT1";
-			output_cfg->channels = 8;
-			break;
-		case OUTPUT_AC3:
-			output->name = "AC3";
-			output_cfg->format = QAP_AUDIO_FORMAT_AC3;
-			break;
-		case OUTPUT_EAC3:
-			output->name = "EAC3";
-			output_cfg->format = QAP_AUDIO_FORMAT_EAC3;
-			break;
-		}
-
-		outputs_present |= 1 << outputs[i];
-		output_cfg->id = AUDIO_OUTPUT_ID_BASE +
-			qap_session_cfg.num_output++;
-	}
-
-	/* set BS mode for MS12 */
-	if (!strcmp(qap_lib_name, QAP_LIB_DOLBY_MS12)) {
-		char params[32];
-
-		if (outputs_present & (1 << OUTPUT_EAC3))
-			bs_mode = MS12_BS_OUT_MODE_DDP;
-		else if (outputs_present & (1 << OUTPUT_AC3))
-			bs_mode = MS12_BS_OUT_MODE_DD;
-		else
-			bs_mode = MS12_BS_OUT_MODE_PCM;
-
-		sprintf(params, "%s=%d", MS12_KEY_BS_OUT_MODE, bs_mode);
-
-		ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_KVPAIRS,
-				      strlen(params) + 1, params, NULL, NULL);
-		if (ret) {
-			err("qap: QAP_SESSION_CMD_SET_KVPAIRS command failed");
-			return 1;
-		}
-	}
-
-	/* setup outputs */
-	ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_OUTPUTS,
-			      sizeof (qap_session_cfg), &qap_session_cfg,
-			      NULL, NULL);
-	if (ret) {
-		err("qap: QAP_SESSION_CMD_SET_CONFIG command failed");
-		return 1;
-	}
+	configure_outputs(num_outputs, outputs);
 
 	/* apply user kvpairs */
 	if (kvpairs) {
