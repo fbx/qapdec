@@ -81,7 +81,6 @@ static struct qap_output_ctx {
 	bool wav_enabled;
 	int wav_channel_count;
 	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
-	int wav_block_size;
 	uint64_t last_ts;
 	uint64_t total_bytes;
 	uint64_t start_time;
@@ -280,7 +279,6 @@ static int output_write_header(struct qap_output_ctx *out)
 	memcpy(out->wav_channel_offset, wav_channel_offset,
 	       sizeof (wav_channel_offset));
 
-	out->wav_block_size = hdr.fmt.block_align;
 	out->wav_channel_count = wav_channel_count;
 	out->wav_enabled = true;
 
@@ -296,20 +294,23 @@ static int output_write_buffer(struct qap_output_ctx *out,
 	if (out->wav_enabled) {
 		const uint8_t *src;
 		int sample_size;
-		int n_blocks;
+		int frame_size;
+		int n_frames;
 
 		src = buffer->data;
 
-		assert(buffer->size % out->wav_block_size == 0);
-		n_blocks = buffer->size / out->wav_block_size;
-		sample_size = out->wav_block_size / out->wav_channel_count;
+		sample_size = out->config.bit_width / 8;
+		frame_size = out->config.channels * sample_size;
+		n_frames = buffer->size / frame_size;
 
-		for (int i = 0; i < n_blocks; i++) {
+		assert(buffer->size % frame_size == 0);
+
+		for (int i = 0; i < n_frames; i++) {
 			for (int ch = 0; ch < out->wav_channel_count; ch++) {
 				fwrite(src + out->wav_channel_offset[ch],
 				       sample_size, 1, out->stream);
 			}
-			src += out->wav_block_size;
+			src += frame_size;
 		}
 	} else {
 		fwrite(buffer->data, buffer->size, 1, out->stream);
