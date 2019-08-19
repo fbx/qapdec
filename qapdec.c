@@ -1030,7 +1030,8 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 		AVRational av_timebase = stream->avstream->time_base;
 		AVRational qap_timebase = { 1, 1000000 };
 		qap_buffer.common_params.timestamp =
-			av_rescale_q(pkt.pts, av_timebase, qap_timebase);
+			av_rescale_q(pkt.pts - stream->avstream->start_time,
+				     av_timebase, qap_timebase);
 		qap_buffer.buffer_parms.input_buf_params.flags =
 			QAP_BUFFER_TSTAMP;
 	}
