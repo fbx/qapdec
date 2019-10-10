@@ -874,6 +874,84 @@ fail:
 	return NULL;
 }
 
+static int
+stream_write(struct stream *stream, void *data, int size, int64_t pts)
+{
+	qap_audio_buffer_t qap_buffer;
+	int ret;
+
+	if (stream->written_bytes == 0)
+		stream->start_time = get_time();
+
+	memset(&qap_buffer, 0, sizeof (qap_buffer));
+	qap_buffer.common_params.data = data;
+	qap_buffer.common_params.size = size;
+	qap_buffer.common_params.offset = 0;
+
+	if (pts == AV_NOPTS_VALUE) {
+		qap_buffer.common_params.timestamp = 0;
+		qap_buffer.buffer_parms.input_buf_params.flags =
+			QAP_BUFFER_NO_TSTAMP;
+	} else {
+		AVRational av_timebase = stream->avstream->time_base;
+		AVRational qap_timebase = { 1, 1000000 };
+		qap_buffer.common_params.timestamp =
+			av_rescale_q(pts - stream->avstream->start_time,
+				     av_timebase, qap_timebase);
+		qap_buffer.buffer_parms.input_buf_params.flags =
+			QAP_BUFFER_TSTAMP;
+	}
+
+	if (opt_render_realtime &&
+	    qap_buffer.buffer_parms.input_buf_params.flags == QAP_BUFFER_TSTAMP) {
+		uint64_t now;
+		int64_t delay;
+
+		/* throttle input in real time mode */
+		now = get_time() - stream->start_time;
+		delay = qap_buffer.common_params.timestamp - now - 10000;
+
+		if (delay > 0) {
+			dbg("dec: %s: wait %" PRIi64 "us",
+			    stream->name, delay);
+			usleep(delay);
+		}
+	}
+
+	dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
+	    stream->name, size, pts, qap_buffer.common_params.timestamp);
+
+	while (qap_buffer.common_params.offset <
+	       qap_buffer.common_params.size) {
+		uint64_t t;
+
+		pthread_mutex_lock(&stream->lock);
+		stream->buffer_full = true;
+		pthread_mutex_unlock(&stream->lock);
+
+		t = get_time();
+
+		ret = qap_module_process(stream->module, &qap_buffer);
+		if (ret < 0) {
+			dbg("dec: %s: full, %" PRIu64 " bytes written",
+			    stream->name, stream->written_bytes);
+			wait_buffer_available(stream);
+		} else if (ret == 0) {
+			err("dec: %s: decoder returned zero size",
+			    stream->name);
+			break;
+		} else {
+			qap_buffer.common_params.offset += ret;
+			stream->written_bytes += ret;
+			dbg("dec: %s: written %d bytes in %dus, total %" PRIu64,
+			    stream->name, ret, (int)(get_time() - t),
+			    stream->written_bytes);
+		}
+	}
+
+	return size;
+}
+
 static void
 ffmpeg_src_destroy(struct ffmpeg_src *src)
 {
@@ -992,7 +1070,6 @@ ffmpeg_src_find_stream_by_index(struct ffmpeg_src *src, int index)
 static int
 ffmpeg_src_read_frame(struct ffmpeg_src *src)
 {
-	qap_audio_buffer_t qap_buffer;
 	struct stream *stream;
 	AVPacket pkt;
 	int ret;
@@ -1010,83 +1087,15 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 	/* find out which stream the frame belongs to */
 	stream = ffmpeg_src_find_stream_by_index(src, pkt.stream_index);
 	if (!stream) {
-		av_packet_unref(&pkt);
-		return 0;
+		ret = 0;
+		goto out;
 	}
-
-	if (stream->written_bytes == 0)
-		stream->start_time = get_time();
 
 	/* push the audio frame to the decoder */
-	memset(&qap_buffer, 0, sizeof (qap_buffer));
-	qap_buffer.common_params.data = pkt.data;
-	qap_buffer.common_params.size = pkt.size;
-	qap_buffer.common_params.offset = 0;
+	ret = stream_write(stream, pkt.data, pkt.size, pkt.pts);
 
-	if (pkt.pts == AV_NOPTS_VALUE) {
-		qap_buffer.common_params.timestamp = 0;
-		qap_buffer.buffer_parms.input_buf_params.flags =
-			QAP_BUFFER_NO_TSTAMP;
-	} else {
-		AVRational av_timebase = stream->avstream->time_base;
-		AVRational qap_timebase = { 1, 1000000 };
-		qap_buffer.common_params.timestamp =
-			av_rescale_q(pkt.pts - stream->avstream->start_time,
-				     av_timebase, qap_timebase);
-		qap_buffer.buffer_parms.input_buf_params.flags =
-			QAP_BUFFER_TSTAMP;
-	}
-
-	if (opt_render_realtime &&
-	    qap_buffer.buffer_parms.input_buf_params.flags == QAP_BUFFER_TSTAMP) {
-		uint64_t now;
-		int64_t delay;
-
-		now = get_time() - stream->start_time;
-		delay = qap_buffer.common_params.timestamp - now - 10000;
-
-		if (delay > 0) {
-			dbg("dec: %s: wait %" PRIi64 "us",
-			    stream->name, delay);
-			usleep(delay);
-		}
-	}
-
-	dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
-	    stream->name, pkt.size, pkt.pts,
-	    qap_buffer.common_params.timestamp);
-
-	while (qap_buffer.common_params.offset <
-	       qap_buffer.common_params.size) {
-		uint64_t t;
-
-		pthread_mutex_lock(&stream->lock);
-		stream->buffer_full = true;
-		pthread_mutex_unlock(&stream->lock);
-
-		t = get_time();
-
-		ret = qap_module_process(stream->module, &qap_buffer);
-		if (ret < 0) {
-			dbg("dec: %s: full, %" PRIu64 " bytes written",
-			    stream->name, stream->written_bytes);
-			wait_buffer_available(stream);
-		} else if (ret == 0) {
-			err("dec: %s: decoder returned zero size",
-			    stream->name);
-			break;
-		} else {
-			qap_buffer.common_params.offset += ret;
-			stream->written_bytes += ret;
-			dbg("dec: %s: written %d bytes in %dus, total %" PRIu64,
-			    stream->name, ret, (int)(get_time() - t),
-			    stream->written_bytes);
-		}
-	}
-
-	ret = pkt.size;
+out:
 	av_packet_unref(&pkt);
-
 	return ret;
 }
 
