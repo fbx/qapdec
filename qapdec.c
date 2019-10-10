@@ -49,6 +49,8 @@
 
 #define AUDIO_OUTPUT_ID_BASE 0x100
 
+#define ADTS_HEADER_SIZE 7
+
 /* MS12 bitstream output mode */
 #define MS12_KEY_BS_OUT_MODE		"bs_out_mode"
 #define MS12_BS_OUT_MODE_PCM		0
@@ -102,6 +104,9 @@ enum stream_state {
 struct stream {
 	const char *name;
 	AVStream *avstream;
+	AVFormatContext *avmux;
+	uint8_t adts_header[ADTS_HEADER_SIZE];
+	bool insert_adts_header;
 	qap_module_handle_t module;
 	qap_module_flags_t flags;
 	pthread_mutex_t lock;
@@ -741,6 +746,9 @@ stream_destroy(struct stream *stream)
 	if (stream->module && qap_module_deinit(stream->module))
 		err("qap: failed to deinit %s module", stream->name);
 
+	if (stream->avmux)
+		avformat_free_context(stream->avmux);
+
 	pthread_cond_destroy(&stream->cond);
 	pthread_mutex_destroy(&stream->lock);
 	free(stream);
@@ -862,6 +870,59 @@ stream_create(AVStream *avstream, qap_module_flags_t qap_flags)
 				    handle_qap_module_event, stream)) {
 		err("qap: failed to set module callback");
 		goto fail;
+	}
+
+	if (codecpar->codec_id == AV_CODEC_ID_AAC &&
+	    codecpar->extradata_size >= 2) {
+		uint16_t config;
+		int obj_type, rate_idx, channels_idx;
+
+		config = be16toh(*(uint16_t *)codecpar->extradata);
+		obj_type = (config & 0xf800) >> 11;
+		rate_idx = (config & 0x0780) >> 7;
+		channels_idx = (config & 0x0078) >> 3;
+
+		if (obj_type <= 3 && rate_idx == 15) {
+			/* prepare ADTS header for MAIN, LC, SSR profiles */
+			stream->adts_header[0] = 0xff;
+			stream->adts_header[1] = 0xf9;
+			stream->adts_header[2] = obj_type << 6;
+			stream->adts_header[2] |= rate_idx << 2;
+			stream->adts_header[2] |= (channels_idx & 4) >> 2;
+			stream->adts_header[3] = (channels_idx & 3) << 6;
+			stream->adts_header[4] = 0;
+			stream->adts_header[5] = 0x1f;
+			stream->adts_header[6] = 0x1c;
+			stream->insert_adts_header = true;
+		} else {
+			/* otherwise try to use LATM muxer, which also supports
+			 * SBR and ALS */
+			AVStream *mux_stream;
+
+			int ret = avformat_alloc_output_context2(&stream->avmux,
+								 NULL, "latm",
+								 NULL);
+			if (ret < 0) {
+				av_err(ret, "failed to create latm mux");
+				goto fail;
+			}
+
+			mux_stream = avformat_new_stream(stream->avmux, NULL);
+			if (!mux_stream) {
+				err("failed to create latm stream");
+				goto fail;
+			}
+
+			mux_stream->time_base = stream->avstream->time_base;
+			avcodec_parameters_copy(mux_stream->codecpar,
+						stream->avstream->codecpar);
+
+			ret = avformat_write_header(stream->avmux, NULL);
+			if (ret < 0) {
+				av_err(ret, "failed to write latm header");
+				goto fail;
+			}
+		}
 	}
 
 	if (stream_start(stream))
@@ -1091,8 +1152,50 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 		goto out;
 	}
 
-	/* push the audio frame to the decoder */
-	ret = stream_write(stream, pkt.data, pkt.size, pkt.pts);
+	if (stream->insert_adts_header) {
+		/* packets should have AV_INPUT_BUFFER_PADDING_SIZE padding in
+		 * them, so we can use that to avoid a copy */
+		memmove(pkt.data + ADTS_HEADER_SIZE, pkt.data, pkt.size);
+		memcpy(pkt.data, stream->adts_header, ADTS_HEADER_SIZE);
+		pkt.size += ADTS_HEADER_SIZE;
+
+		/* patch ADTS header with frame size */
+		pkt.data[3] |= pkt.size >> 11;
+		pkt.data[4] |= pkt.size >> 3;
+		pkt.data[5] |= (pkt.size & 0x07) << 5;
+
+		/* push the audio frame to the decoder */
+		ret = stream_write(stream, pkt.data, pkt.size, pkt.pts);
+
+	} else if (stream->avmux) {
+		AVIOContext *avio;
+		uint8_t *data;
+		int size;
+
+		ret = avio_open_dyn_buf(&avio);
+		if (ret < 0) {
+			av_err(ret, "failed to create avio context");
+			goto out;
+		}
+
+		stream->avmux->pb = avio;
+
+		pkt.stream_index = 0;
+		ret = av_write_frame(stream->avmux, &pkt);
+		if (ret < 0) {
+			av_err(ret, "failed to mux data");
+			goto out;
+		}
+
+		size = avio_close_dyn_buf(stream->avmux->pb, &data);
+		stream->avmux->pb = NULL;
+
+		ret = stream_write(stream, data, size, pkt.pts);
+		av_free(data);
+	} else {
+		/* push the audio frame to the decoder */
+		ret = stream_write(stream, pkt.data, pkt.size, pkt.pts);
+	}
 
 out:
 	av_packet_unref(&pkt);

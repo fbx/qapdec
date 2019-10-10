@@ -113,6 +113,8 @@ if [ ! -e Makefile ]; then
         --disable-filters \
         --enable-filter=sine \
         --disable-muxers \
+        --enable-muxer=adts \
+        --enable-muxer=latm \
         --disable-demuxers \
         --enable-demuxer=aac \
         --enable-demuxer=ac3 \
