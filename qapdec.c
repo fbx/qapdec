@@ -954,10 +954,16 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 		qap_buffer.buffer_parms.input_buf_params.flags =
 			QAP_BUFFER_NO_TSTAMP;
 	} else {
+		int64_t start_time;
+
+		start_time = stream->avstream->start_time;
+		if (start_time == AV_NOPTS_VALUE)
+			start_time = 0;
+
 		AVRational av_timebase = stream->avstream->time_base;
 		AVRational qap_timebase = { 1, 1000000 };
 		qap_buffer.common_params.timestamp =
-			av_rescale_q(pts - stream->avstream->start_time,
+			av_rescale_q(pts - start_time,
 				     av_timebase, qap_timebase);
 		qap_buffer.buffer_parms.input_buf_params.flags =
 			QAP_BUFFER_TSTAMP;
