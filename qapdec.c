@@ -954,16 +954,10 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 		qap_buffer.buffer_parms.input_buf_params.flags =
 			QAP_BUFFER_NO_TSTAMP;
 	} else {
-		int64_t start_time;
-
-		start_time = stream->avstream->start_time;
-		if (start_time == AV_NOPTS_VALUE)
-			start_time = 0;
-
 		AVRational av_timebase = stream->avstream->time_base;
 		AVRational qap_timebase = { 1, 1000000 };
 		qap_buffer.common_params.timestamp =
-			av_rescale_q(pts - start_time,
+			av_rescale_q(pts - stream->avstream->start_time,
 				     av_timebase, qap_timebase);
 		qap_buffer.buffer_parms.input_buf_params.flags =
 			QAP_BUFFER_TSTAMP;
@@ -1420,13 +1414,13 @@ static const struct option long_options[] = {
 	{ "primary-stream",    required_argument, 0, 'p' },
 	{ "secondary-stream",  required_argument, 0, 's' },
 	{ "realtime",          no_argument,       0, '0' },
-	{ "sys-source",        required_argument, 0, '1' },
-	{ "app-source",        required_argument, 0, '2' },
-	{ "ott-source",        required_argument, 0, '3' },
+	{ "sec-source",        required_argument, 0, '1' },
+	{ "sys-source",        required_argument, 0, '2' },
+	{ "app-source",        required_argument, 0, '3' },
 	{ "sys-format",        required_argument, 0, '4' },
 	{ "app-format",        required_argument, 0, '5' },
-	{ "ott-format",        required_argument, 0, '6' },
-	{ "sec-source",        required_argument, 0, '7' },
+	{ "ott-source",        required_argument, 0, '6' },
+	{ "ott-format",        required_argument, 0, '7' },
 	{ 0,                   0,                 0,  0  }
 };
 
@@ -1527,13 +1521,13 @@ int main(int argc, char **argv)
 			opt_render_realtime = 1;
 			break;
 		case '1':
-			src_url[MODULE_SYSTEM_SOUND] = optarg;
+			src_url[MODULE_SECONDARY] = optarg;
 			break;
 		case '2':
-			src_url[MODULE_APP_SOUND] = optarg;
+			src_url[MODULE_SYSTEM_SOUND] = optarg;
 			break;
 		case '3':
-			src_url[MODULE_OTT_SOUND] = optarg;
+			src_url[MODULE_APP_SOUND] = optarg;
 			break;
 		case '4':
 			src_format[MODULE_SYSTEM_SOUND] = optarg;
@@ -1542,10 +1536,10 @@ int main(int argc, char **argv)
 			src_format[MODULE_APP_SOUND] = optarg;
 			break;
 		case '6':
-			src_format[MODULE_OTT_SOUND] = optarg;
+			src_url[MODULE_OTT_SOUND] = optarg;
 			break;
 		case '7':
-			src_url[MODULE_SECONDARY] = optarg;
+			src_format[MODULE_OTT_SOUND] = optarg;
 			break;
 		case 'h':
 			usage();
@@ -1649,6 +1643,7 @@ again:
 
 	qap_session_set_callback(qap_session, handle_qap_session_event, NULL);
 
+	/* configure outputs */
 	configure_outputs(num_outputs, outputs);
 
 	/* apply user kvpairs */
@@ -1786,7 +1781,7 @@ again:
 
 	if (src_duration > 0 && !decode_err) {
 		notice("render speed: %.2fx realtime",
-		     (float)src_duration / (float)(end_time - start_time));
+		       (float)src_duration / (float)(end_time - start_time));
 	}
 
 	if (!quit && --loops > 0)
