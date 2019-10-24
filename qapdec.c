@@ -2,10 +2,13 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include <unistd.h>
+#include <poll.h>
+#include <termios.h>
 #include <assert.h>
 #include <signal.h>
 #include <getopt.h>
 #include <pthread.h>
+#include <sys/eventfd.h>
 
 #include <dolby_ms12.h>
 #include <dts_m8.h>
@@ -76,6 +79,15 @@ enum output_type {
 	MAX_OUTPUTS,
 };
 
+enum module_type {
+	MODULE_PRIMARY,
+	MODULE_SECONDARY,
+	MODULE_SYSTEM_SOUND,
+	MODULE_APP_SOUND,
+	MODULE_OTT_SOUND,
+	MAX_MODULES,
+};
+
 static struct qap_output_ctx {
 	const char *name;
 	qap_output_config_t config;
@@ -95,6 +107,15 @@ static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
 static bool qap_eos_received;
 static const char *qap_lib_name;
 
+enum kbd_command {
+	KBD_NONE,
+	KBD_PLAYPAUSE,
+	KBD_STOP,
+};
+
+static int kbd_ev = -1;
+static enum kbd_command kbd_pending_command = KBD_NONE;
+
 enum stream_state {
 	STREAM_STATE_STOPPED,
 	STREAM_STATE_STARTED,
@@ -112,6 +133,7 @@ struct stream {
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 	bool buffer_full;
+	bool terminated;
 	enum stream_state state;
 	uint64_t start_time;
 	uint64_t written_bytes;
@@ -125,6 +147,8 @@ struct ffmpeg_src {
 	int n_streams;
 	pthread_t tid;
 };
+
+static struct ffmpeg_src *qap_inputs[MAX_MODULES];
 
 #define WAV_SPEAKER_FRONT_LEFT			0x1
 #define WAV_SPEAKER_FRONT_RIGHT			0x2
@@ -624,7 +648,7 @@ static void wait_buffer_available(struct stream *stream)
 	dbg(" dec: in %s: wait buffer", stream->name);
 
 	pthread_mutex_lock(&stream->lock);
-	while (stream->buffer_full)
+	while (!stream->terminated && stream->buffer_full)
 		pthread_cond_wait(&stream->cond, &stream->lock);
 	pthread_mutex_unlock(&stream->lock);
 }
@@ -644,18 +668,15 @@ static int get_av_log_level(void)
 	return AV_LOG_QUIET;
 }
 
-static void handle_quit(int sig)
-{
-	quit = true;
-}
-
 static int
 stream_start(struct stream *stream)
 {
 	int ret;
 
-	if (stream->state == STREAM_STATE_STARTED)
+	if (stream->state == STREAM_STATE_STARTED) {
+		info("qap: in %s: already started", stream->name);
 		return 0;
+	}
 
 	info("qap: in %s: start", stream->name);
 
@@ -671,13 +692,15 @@ stream_start(struct stream *stream)
 	return 0;
 }
 
-static int __attribute__((unused))
+static int
 stream_pause(struct stream *stream)
 {
 	int ret;
 
-	if (stream->state != STREAM_STATE_STARTED)
+	if (stream->state != STREAM_STATE_STARTED) {
+		info("qap: in %s: cannot pause, not started", stream->name);
 		return 0;
+	}
 
 	info("qap: in %s: pause", stream->name);
 
@@ -698,8 +721,10 @@ stream_stop(struct stream *stream)
 {
 	int ret;
 
-	if (stream->state == STREAM_STATE_STOPPED)
+	if (stream->state == STREAM_STATE_STOPPED) {
+		info("qap: in %s: already stopped", stream->name);
 		return 0;
+	}
 
 	info("qap: in %s: stop", stream->name);
 
@@ -735,6 +760,15 @@ stream_send_eos(struct stream *stream)
 	}
 
 	return 0;
+}
+
+static void
+stream_terminate(struct stream *stream)
+{
+	pthread_mutex_lock(&stream->lock);
+	stream->terminated = true;
+	pthread_cond_signal(&stream->cond);
+	pthread_mutex_unlock(&stream->lock);
 }
 
 static void
@@ -979,11 +1013,11 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 		}
 	}
 
-	dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
-	    stream->name, size, pts, qap_buffer.common_params.timestamp);
+	dbg(" in: %s: terminated=%d buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
+	    stream->name, stream->terminated, size, pts, qap_buffer.common_params.timestamp);
 
-	while (qap_buffer.common_params.offset <
-	       qap_buffer.common_params.size) {
+	while (!stream->terminated &&
+	       qap_buffer.common_params.offset < qap_buffer.common_params.size) {
 		uint64_t t;
 
 		pthread_mutex_lock(&stream->lock);
@@ -1009,6 +1043,9 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 			    stream->written_bytes);
 		}
 	}
+
+	if (stream->terminated)
+		return -1;
 
 	return size;
 }
@@ -1228,6 +1265,13 @@ ffmpeg_src_thread_start(struct ffmpeg_src *src)
 	return pthread_create(&src->tid, NULL, ffmpeg_src_thread_func, src);
 }
 
+static void
+ffmpeg_src_thread_stop(struct ffmpeg_src *src)
+{
+	for (int i = 0; i < src->n_streams; i++)
+		stream_terminate(src->streams[i]);
+}
+
 static int
 ffmpeg_src_thread_join(struct ffmpeg_src *src)
 {
@@ -1263,15 +1307,6 @@ handle_log_msg(qap_log_level_t level, const char *msg)
 
 	print(dbg_level, "%.*s\n", len, msg);
 }
-
-enum module_type {
-	MODULE_PRIMARY,
-	MODULE_SECONDARY,
-	MODULE_SYSTEM_SOUND,
-	MODULE_APP_SOUND,
-	MODULE_OTT_SOUND,
-	MAX_MODULES,
-};
 
 static void
 init_outputs(void)
@@ -1375,11 +1410,138 @@ configure_outputs(int num_outputs, enum output_type *outputs)
 	return 0;
 }
 
+static struct stream *get_nth_stream(int n)
+{
+	struct ffmpeg_src *src;
+	int index = -1;
+
+	if (n < 0)
+		return NULL;
+
+	for (int i = 0; i < MAX_MODULES; i++) {
+		src = qap_inputs[i];
+		if (src == NULL)
+			continue;
+
+		index += src->n_streams;
+		if (index >= n)
+			return src->streams[index - n];
+	}
+
+	return NULL;
+}
+
+static void kbd_handle_key(char key[3])
+{
+	enum kbd_command cmd = kbd_pending_command;
+
+	if (key[0] == 'p') {
+		kbd_pending_command = KBD_PLAYPAUSE;
+		notice("Enter stream number");
+	} else if (key[0] == 's') {
+		kbd_pending_command = KBD_STOP;
+		notice("Enter stream number");
+	} else {
+		kbd_pending_command = KBD_NONE;
+	}
+
+	if (key[0] >= '1' && key[0] <= '9') {
+		struct stream *stream;
+		int index;
+
+		if (cmd == KBD_NONE)
+			return;
+
+		index = key[0] - '0';
+
+		stream = get_nth_stream(index - 1);
+		if (!stream) {
+			err("stream %d not found", index);
+			return;
+		}
+
+		switch (cmd) {
+		case KBD_PLAYPAUSE:
+			if (stream->state == STREAM_STATE_STARTED)
+				stream_pause(stream);
+			else
+				stream_start(stream);
+			break;
+		case KBD_STOP:
+			stream_stop(stream);
+			break;
+		case KBD_NONE:
+			break;
+		}
+	}
+}
+
+static void *kbd_thread(void *userdata)
+{
+	struct termios stdin_termios;
+	struct termios newt;
+	char key[3];
+	struct pollfd fds[2];
+	int ret;
+
+	if (tcgetattr(STDIN_FILENO, &stdin_termios) < 0)
+		return NULL;
+
+	newt = stdin_termios;
+	newt.c_lflag &= ~ICANON;
+	newt.c_lflag &= ~ECHO;
+
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &newt) < 0)
+		return NULL;
+
+	kbd_ev = eventfd(0, EFD_CLOEXEC);
+
+	fds[0].events = POLLIN;
+	fds[0].fd = STDIN_FILENO;
+
+	fds[1].events = POLLIN;
+	fds[1].fd = kbd_ev;
+
+	while (!quit) {
+		ret = poll(fds, 2, -1);
+		if (ret <= 0)
+			break;
+
+		if (fds[0].revents) {
+			ret = read(STDIN_FILENO, key, 3);
+			if (ret <= 0)
+				break;
+			kbd_handle_key(key);
+		}
+	}
+
+	tcsetattr(STDIN_FILENO, TCSANOW, &stdin_termios);
+
+	return NULL;
+}
+
+static void handle_quit(int sig)
+{
+	quit = true;
+
+	for (int i = 0; i < MAX_MODULES; i++) {
+		struct ffmpeg_src *src = qap_inputs[i];
+		if (src != NULL)
+			ffmpeg_src_thread_stop(src);
+	}
+
+	if (kbd_ev != -1) {
+		uint64_t v = 1;
+		write(kbd_ev, &v, sizeof v);
+	}
+}
+
 static void usage(void)
 {
 	fprintf(stderr, "usage: qapdec [OPTS] <input>\n"
 		"Where OPTS is a combination of:\n"
 		"  -v, --verbose                increase debug verbosity\n"
+		"  -i, --interactive            enable keyboard control on the tty\n"
 		"  -f, --format                 force ffmpeg input format\n"
 		"  -p, --primary-stream=<n>     audio primary stream number to decode\n"
 		"  -s, --secondary-stream=<n>   audio secondary stream number to decode\n"
@@ -1406,6 +1568,7 @@ static const struct option long_options[] = {
 	{ "help",              no_argument,       0, 'h' },
 	{ "verbose",           no_argument,       0, 'v' },
 	{ "channels",          required_argument, 0, 'c' },
+	{ "interactive",       no_argument,       0, 'i' },
 	{ "kvpairs",           required_argument, 0, 'k' },
 	{ "loops",             required_argument, 0, 'l' },
 	{ "output",            required_argument, 0, 'o' },
@@ -1436,18 +1599,20 @@ int main(int argc, char **argv)
 	unsigned int num_outputs = 0;
 	char *kvpairs = NULL;
 	FILE *output_stream = NULL;
-	struct ffmpeg_src *src[MAX_MODULES];
+	struct ffmpeg_src **src = qap_inputs;
 	const char *src_url[MAX_MODULES] = { };
 	const char *src_format[MAX_MODULES] = { };
 	uint64_t src_duration;
 	uint64_t start_time;
 	uint64_t end_time;
+	bool kbd_enable = false;
+	pthread_t kbd_tid;
 	qap_session_t qap_session_type;
 	AVStream *avstream;
 
 	qap_session_type = QAP_SESSION_BROADCAST;
 
-	while ((opt = getopt_long(argc, argv, "c:f:hk:l:o:p:s:t:v",
+	while ((opt = getopt_long(argc, argv, "c:f:hik:l:o:p:s:t:v",
 				  long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'c':
@@ -1474,6 +1639,9 @@ int main(int argc, char **argv)
 			break;
 		case 'v':
 			debug_level++;
+			break;
+		case 'i':
+			kbd_enable = isatty(STDIN_FILENO);
 			break;
 		case 'k':
 			kvpairs = optarg;
@@ -1570,13 +1738,18 @@ int main(int argc, char **argv)
 	init_outputs();
 	qap_outputs[outputs[0]].stream = output_stream;
 
+	if (kbd_enable)
+		kbd_enable = !pthread_create(&kbd_tid, NULL, kbd_thread, NULL);
+
 again:
 	info("QAP library version %u", qap_get_version());
 
 	qap_eos_received = false;
 
 	/* init ffmpeg source and demuxer */
-	memset(src, 0, sizeof src);
+	for (int i = 0; i < MAX_MODULES; i++)
+		src[i] = NULL;
+
 	for (int i = 0; i < MAX_MODULES; i++) {
 		if (!src_url[i])
 			continue;
@@ -1752,8 +1925,10 @@ again:
 	}
 
 	/* cleanup */
-	for (int i = 0; i < MAX_MODULES; i++)
+	for (int i = 0; i < MAX_MODULES; i++) {
 		ffmpeg_src_destroy(src[i]);
+		src[i] = NULL;
+	}
 
 	if (qap_session_close(qap_session))
 		err("qap: failed to close session");
@@ -1786,6 +1961,11 @@ again:
 
 	if (!quit && --loops > 0)
 		goto again;
+
+	if (kbd_enable) {
+		handle_quit(SIGTERM);
+		pthread_join(kbd_tid, NULL);
+	}
 
 	if (qap_unload_library(qap_lib))
 		err("qap: failed to unload library");
