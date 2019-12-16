@@ -206,148 +206,6 @@ get_time(void)
 	return ts.tv_sec * UINT64_C(1000000) + ts.tv_nsec / UINT64_C(1000);
 }
 
-static struct {
-	uint32_t wav_channel;
-	uint8_t qap_channel;
-} wav_channel_table[] = {
-	/* keep in order of wav channels in pcm sample */
-	{ WAV_SPEAKER_FRONT_LEFT, QAP_AUDIO_PCM_CHANNEL_L },
-	{ WAV_SPEAKER_FRONT_RIGHT, QAP_AUDIO_PCM_CHANNEL_R },
-	{ WAV_SPEAKER_FRONT_CENTER, QAP_AUDIO_PCM_CHANNEL_C },
-	{ WAV_SPEAKER_LOW_FREQUENCY, QAP_AUDIO_PCM_CHANNEL_LFE },
-	{ WAV_SPEAKER_BACK_LEFT, QAP_AUDIO_PCM_CHANNEL_LS },
-	{ WAV_SPEAKER_BACK_RIGHT, QAP_AUDIO_PCM_CHANNEL_RS },
-	{ WAV_SPEAKER_SIDE_LEFT, QAP_AUDIO_PCM_CHANNEL_LB },
-	{ WAV_SPEAKER_SIDE_RIGHT, QAP_AUDIO_PCM_CHANNEL_RB },
-	{ WAV_SPEAKER_FRONT_LEFT_OF_CENTER, QAP_AUDIO_PCM_CHANNEL_FLC },
-	{ WAV_SPEAKER_FRONT_RIGHT_OF_CENTER, QAP_AUDIO_PCM_CHANNEL_FRC },
-	{ WAV_SPEAKER_BACK_CENTER, QAP_AUDIO_PCM_CHANNEL_CS },
-	{ WAV_SPEAKER_SIDE_LEFT, QAP_AUDIO_PCM_CHANNEL_SL },
-	{ WAV_SPEAKER_SIDE_RIGHT, QAP_AUDIO_PCM_CHANNEL_SR },
-	{ WAV_SPEAKER_TOP_CENTER, QAP_AUDIO_PCM_CHANNEL_TC },
-	{ WAV_SPEAKER_TOP_FRONT_LEFT, QAP_AUDIO_PCM_CHANNEL_TFL },
-	{ WAV_SPEAKER_TOP_FRONT_CENTER, QAP_AUDIO_PCM_CHANNEL_TFC },
-	{ WAV_SPEAKER_TOP_FRONT_RIGHT, QAP_AUDIO_PCM_CHANNEL_TFR },
-	{ WAV_SPEAKER_TOP_BACK_LEFT, QAP_AUDIO_PCM_CHANNEL_TBL },
-	{ WAV_SPEAKER_TOP_BACK_CENTER, QAP_AUDIO_PCM_CHANNEL_TBC },
-	{ WAV_SPEAKER_TOP_BACK_RIGHT, QAP_AUDIO_PCM_CHANNEL_TBR },
-};
-
-static int output_write_header(struct qap_output_ctx *out)
-{
-	qap_output_config_t *cfg = &out->config;
-	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
-	int wav_channel_count = 0;
-	struct wav_header hdr;
-	uint32_t channel_mask = 0;
-
-	if (out->wav_enabled)
-		return 0;
-
-	if (!out->stream)
-		return 0;
-
-	switch (out->config.format) {
-	case QAP_AUDIO_FORMAT_PCM_16_BIT:
-	case QAP_AUDIO_FORMAT_PCM_8_24_BIT:
-	case QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED:
-	case QAP_AUDIO_FORMAT_PCM_32_BIT:
-		break;
-	default:
-		// nothing to do here
-		return 0;
-	}
-
-	for (unsigned i = 0; i < ARRAY_SIZE(wav_channel_table); i++) {
-		uint8_t qap_ch = wav_channel_table[i].qap_channel;
-		uint32_t wav_ch = wav_channel_table[i].wav_channel;
-
-		for (int pos = 0; pos < cfg->channels; pos++) {
-			if (cfg->ch_map[pos] == qap_ch) {
-				wav_channel_offset[wav_channel_count++] =
-					pos * cfg->bit_width / 8;
-				channel_mask |= wav_ch;
-			}
-		}
-	}
-
-	if (wav_channel_count != cfg->channels) {
-		fprintf(stderr, "dropping %d channels from output",
-			cfg->channels - wav_channel_count);
-	}
-
-	memcpy(&hdr.riff_magic, "RIFF", 4);
-	hdr.riff_chunk_size = 0xffffffff;
-	memcpy(&hdr.wave_magic, "WAVE", 4);
-
-	memcpy(&hdr.fmt.chunk_label, "fmt ", 4);
-	hdr.fmt.chunk_size = sizeof (hdr.fmt) - 8;
-	hdr.fmt.audio_format = 0xfffe; // WAVE_FORMAT_EXTENSIBLE
-	hdr.fmt.num_channels = wav_channel_count;
-	hdr.fmt.sample_rate = cfg->sample_rate;
-	hdr.fmt.byte_rate = cfg->sample_rate * wav_channel_count *
-		cfg->bit_width / 8;
-	hdr.fmt.block_align = wav_channel_count * cfg->bit_width / 8;
-	hdr.fmt.bits_per_sample = cfg->bit_width;
-
-	hdr.fmt.cb_size = sizeof (hdr.fmt.ext);
-	hdr.fmt.ext.valid_bits_per_sample = cfg->bit_width;
-	hdr.fmt.ext.channel_mask = channel_mask;
-	memcpy(&hdr.fmt.ext.sub_format,
-	       "\x01\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xAA\x00\x38\x9B\x71",
-	       16);
-
-	memcpy(&hdr.data.chunk_label, "data", 4);
-	hdr.data.chunk_size = 0xffffffff;
-
-	if (fwrite(&hdr, sizeof (hdr), 1, out->stream) != 1) {
-		fprintf(stderr, "failed to write wav header\n");
-		return -1;
-	}
-
-	memcpy(out->wav_channel_offset, wav_channel_offset,
-	       sizeof (wav_channel_offset));
-
-	out->wav_channel_count = wav_channel_count;
-	out->wav_enabled = true;
-
-	return 0;
-}
-
-static int output_write_buffer(struct qap_output_ctx *out,
-			       const qap_buffer_common_t *buffer)
-{
-	if (!out->stream)
-		return 0;
-
-	if (out->wav_enabled) {
-		const uint8_t *src;
-		int sample_size;
-		int frame_size;
-		int n_frames;
-
-		src = buffer->data;
-
-		sample_size = out->config.bit_width / 8;
-		frame_size = out->config.channels * sample_size;
-		n_frames = buffer->size / frame_size;
-
-		assert(buffer->size % frame_size == 0);
-
-		for (int i = 0; i < n_frames; i++) {
-			for (int ch = 0; ch < out->wav_channel_count; ch++) {
-				fwrite(src + out->wav_channel_offset[ch],
-				       sample_size, 1, out->stream);
-			}
-			src += frame_size;
-		}
-	} else {
-		fwrite(buffer->data, buffer->size, 1, out->stream);
-	}
-
-	return 0;
-}
-
 static const char *audio_format_to_str(qap_audio_format_t format)
 {
 	switch (format) {
@@ -453,6 +311,142 @@ static struct qap_output_ctx *get_qap_output(int index)
 	       index < AUDIO_OUTPUT_ID_BASE + MAX_OUTPUTS);
 
 	return &qap_outputs[index - AUDIO_OUTPUT_ID_BASE];
+}
+
+static struct {
+	uint32_t wav_channel;
+	uint8_t qap_channel;
+} wav_channel_table[] = {
+	/* keep in order of wav channels in pcm sample */
+	{ WAV_SPEAKER_FRONT_LEFT, QAP_AUDIO_PCM_CHANNEL_L },
+	{ WAV_SPEAKER_FRONT_RIGHT, QAP_AUDIO_PCM_CHANNEL_R },
+	{ WAV_SPEAKER_FRONT_CENTER, QAP_AUDIO_PCM_CHANNEL_C },
+	{ WAV_SPEAKER_LOW_FREQUENCY, QAP_AUDIO_PCM_CHANNEL_LFE },
+	{ WAV_SPEAKER_BACK_LEFT, QAP_AUDIO_PCM_CHANNEL_LS },
+	{ WAV_SPEAKER_BACK_RIGHT, QAP_AUDIO_PCM_CHANNEL_RS },
+	{ WAV_SPEAKER_SIDE_LEFT, QAP_AUDIO_PCM_CHANNEL_LB },
+	{ WAV_SPEAKER_SIDE_RIGHT, QAP_AUDIO_PCM_CHANNEL_RB },
+	{ WAV_SPEAKER_FRONT_LEFT_OF_CENTER, QAP_AUDIO_PCM_CHANNEL_FLC },
+	{ WAV_SPEAKER_FRONT_RIGHT_OF_CENTER, QAP_AUDIO_PCM_CHANNEL_FRC },
+	{ WAV_SPEAKER_BACK_CENTER, QAP_AUDIO_PCM_CHANNEL_CS },
+	{ WAV_SPEAKER_SIDE_LEFT, QAP_AUDIO_PCM_CHANNEL_SL },
+	{ WAV_SPEAKER_SIDE_RIGHT, QAP_AUDIO_PCM_CHANNEL_SR },
+	{ WAV_SPEAKER_TOP_CENTER, QAP_AUDIO_PCM_CHANNEL_TC },
+	{ WAV_SPEAKER_TOP_FRONT_LEFT, QAP_AUDIO_PCM_CHANNEL_TFL },
+	{ WAV_SPEAKER_TOP_FRONT_CENTER, QAP_AUDIO_PCM_CHANNEL_TFC },
+	{ WAV_SPEAKER_TOP_FRONT_RIGHT, QAP_AUDIO_PCM_CHANNEL_TFR },
+	{ WAV_SPEAKER_TOP_BACK_LEFT, QAP_AUDIO_PCM_CHANNEL_TBL },
+	{ WAV_SPEAKER_TOP_BACK_CENTER, QAP_AUDIO_PCM_CHANNEL_TBC },
+	{ WAV_SPEAKER_TOP_BACK_RIGHT, QAP_AUDIO_PCM_CHANNEL_TBR },
+};
+
+static int output_write_header(struct qap_output_ctx *out)
+{
+	qap_output_config_t *cfg = &out->config;
+	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
+	int wav_channel_count = 0;
+	struct wav_header hdr;
+	uint32_t channel_mask = 0;
+
+	if (out->wav_enabled)
+		return 0;
+
+	if (!out->stream)
+		return 0;
+
+	if (!format_is_pcm(out->config.format)) {
+		// nothing to do here
+		return 0;
+	}
+
+	for (unsigned i = 0; i < ARRAY_SIZE(wav_channel_table); i++) {
+		uint8_t qap_ch = wav_channel_table[i].qap_channel;
+		uint32_t wav_ch = wav_channel_table[i].wav_channel;
+
+		for (int pos = 0; pos < cfg->channels; pos++) {
+			if (cfg->ch_map[pos] == qap_ch) {
+				wav_channel_offset[wav_channel_count++] =
+					pos * cfg->bit_width / 8;
+				channel_mask |= wav_ch;
+			}
+		}
+	}
+
+	if (wav_channel_count != cfg->channels) {
+		fprintf(stderr, "dropping %d channels from output",
+			cfg->channels - wav_channel_count);
+	}
+
+	memcpy(&hdr.riff_magic, "RIFF", 4);
+	hdr.riff_chunk_size = 0xffffffff;
+	memcpy(&hdr.wave_magic, "WAVE", 4);
+
+	memcpy(&hdr.fmt.chunk_label, "fmt ", 4);
+	hdr.fmt.chunk_size = sizeof (hdr.fmt) - 8;
+	hdr.fmt.audio_format = 0xfffe; // WAVE_FORMAT_EXTENSIBLE
+	hdr.fmt.num_channels = wav_channel_count;
+	hdr.fmt.sample_rate = cfg->sample_rate;
+	hdr.fmt.byte_rate = cfg->sample_rate * wav_channel_count *
+		cfg->bit_width / 8;
+	hdr.fmt.block_align = wav_channel_count * cfg->bit_width / 8;
+	hdr.fmt.bits_per_sample = cfg->bit_width;
+
+	hdr.fmt.cb_size = sizeof (hdr.fmt.ext);
+	hdr.fmt.ext.valid_bits_per_sample = cfg->bit_width;
+	hdr.fmt.ext.channel_mask = channel_mask;
+	memcpy(&hdr.fmt.ext.sub_format,
+	       "\x01\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xAA\x00\x38\x9B\x71",
+	       16);
+
+	memcpy(&hdr.data.chunk_label, "data", 4);
+	hdr.data.chunk_size = 0xffffffff;
+
+	if (fwrite(&hdr, sizeof (hdr), 1, out->stream) != 1) {
+		fprintf(stderr, "failed to write wav header\n");
+		return -1;
+	}
+
+	memcpy(out->wav_channel_offset, wav_channel_offset,
+	       sizeof (wav_channel_offset));
+
+	out->wav_channel_count = wav_channel_count;
+	out->wav_enabled = true;
+
+	return 0;
+}
+
+static int output_write_buffer(struct qap_output_ctx *out,
+			       const qap_buffer_common_t *buffer)
+{
+	if (!out->stream)
+		return 0;
+
+	if (out->wav_enabled) {
+		const uint8_t *src;
+		int sample_size;
+		int frame_size;
+		int n_frames;
+
+		src = buffer->data;
+
+		sample_size = out->config.bit_width / 8;
+		frame_size = out->config.channels * sample_size;
+		n_frames = buffer->size / frame_size;
+
+		assert(buffer->size % frame_size == 0);
+
+		for (int i = 0; i < n_frames; i++) {
+			for (int ch = 0; ch < out->wav_channel_count; ch++) {
+				fwrite(src + out->wav_channel_offset[ch],
+				       sample_size, 1, out->stream);
+			}
+			src += frame_size;
+		}
+	} else {
+		fwrite(buffer->data, buffer->size, 1, out->stream);
+	}
+
+	return 0;
 }
 
 static void handle_buffer(qap_audio_buffer_t *buffer)
