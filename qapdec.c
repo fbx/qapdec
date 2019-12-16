@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <inttypes.h>
 #include <unistd.h>
+#include <errno.h>
 #include <poll.h>
 #include <termios.h>
 #include <assert.h>
@@ -9,6 +11,7 @@
 #include <getopt.h>
 #include <pthread.h>
 #include <sys/eventfd.h>
+#include <sys/stat.h>
 
 #include <dolby_ms12.h>
 #include <dts_m8.h>
@@ -63,9 +66,11 @@
 
 qap_lib_handle_t qap_lib;
 qap_session_handle_t qap_session;
+unsigned int qap_outputs_configure_count;
 
 int debug_level = 1;
 bool opt_render_realtime;
+char *opt_output_dir;
 volatile bool quit;
 volatile bool primary_done;
 
@@ -92,6 +97,8 @@ static struct qap_output_ctx {
 	const char *name;
 	qap_output_config_t config;
 	qap_output_delay_t delay;
+	bool enabled;
+	bool discont;
 	bool wav_enabled;
 	int wav_channel_count;
 	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
@@ -206,6 +213,73 @@ get_time(void)
 	return ts.tv_sec * UINT64_C(1000000) + ts.tv_nsec / UINT64_C(1000);
 }
 
+static int
+mkdir_parents(const char *path, mode_t mode)
+{
+	const char *p, *e;
+	char *t;
+	int ret;
+	struct stat st;
+
+	p = path + strspn(path, "/");
+
+	while (1) {
+		e = p + strcspn(p, "/");
+		p = e + strspn(e, "/");
+
+		if (*p == 0)
+			return 0;
+
+		if ((t = strndup(path, p - path)) == NULL) {
+			errno = ENOMEM;
+			return -1;
+		}
+
+		ret = mkdir(t, mode);
+
+		if (!ret) {
+			free(t);
+			continue;
+		}
+
+		if (errno != EEXIST) {
+			free(t);
+			return -1;
+		}
+
+		if (lstat(t, &st) || !S_ISDIR(st.st_mode)) {
+			free(t);
+			errno = ENOTDIR;
+			return -1;
+		}
+
+		free(t);
+	}
+}
+
+static int
+mkdir_p(const char *path, mode_t mode)
+{
+	int ret;
+	struct stat st;
+
+	if ((ret = mkdir_parents(path, mode)) < 0)
+		return ret;
+
+	if (!mkdir(path, mode))
+		return 0;
+
+	if (errno != EEXIST)
+		return -1;
+
+	if (lstat(path, &st) || !S_ISDIR(st.st_mode)) {
+		errno = ENOTDIR;
+		return -1;
+	}
+
+	return 0;
+}
+
 static const char *audio_format_to_str(qap_audio_format_t format)
 {
 	switch (format) {
@@ -227,6 +301,40 @@ static const char *audio_format_to_str(qap_audio_format_t format)
 	CASESTR(QAP_AUDIO_FORMAT_DTS_HD)
 	}
 	return "unknown";
+}
+
+static const char *audio_format_extension(qap_audio_format_t format)
+{
+	switch (format) {
+	case QAP_AUDIO_FORMAT_PCM_16_BIT:
+	case QAP_AUDIO_FORMAT_PCM_8_24_BIT:
+	case QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED:
+	case QAP_AUDIO_FORMAT_PCM_32_BIT:
+		return "wav";
+	case QAP_AUDIO_FORMAT_AC3:
+		return "ac3";
+	case QAP_AUDIO_FORMAT_AC4:
+		return "ac4";
+	case QAP_AUDIO_FORMAT_EAC3:
+		return "ec3";
+	case QAP_AUDIO_FORMAT_AAC:
+	case QAP_AUDIO_FORMAT_AAC_ADTS:
+		return "aac";
+	case QAP_AUDIO_FORMAT_MP2:
+		return "mp2";
+	case QAP_AUDIO_FORMAT_MP3:
+		return "mp3";
+	case QAP_AUDIO_FORMAT_FLAC:
+		return "flac";
+	case QAP_AUDIO_FORMAT_ALAC:
+		return "alac";
+	case QAP_AUDIO_FORMAT_APE:
+		return "ape";
+	case QAP_AUDIO_FORMAT_DTS:
+	case QAP_AUDIO_FORMAT_DTS_HD:
+		return "dts";
+	}
+	return "raw";
 }
 
 static int
@@ -343,16 +451,35 @@ static struct {
 static int output_write_header(struct qap_output_ctx *out)
 {
 	qap_output_config_t *cfg = &out->config;
+	char filename[PATH_MAX];
 	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
 	int wav_channel_count = 0;
 	struct wav_header hdr;
 	uint32_t channel_mask = 0;
 
-	if (out->wav_enabled)
+	if (!opt_output_dir)
 		return 0;
 
-	if (!out->stream)
+	if (out->discont) {
+		if (out->stream)
+			fclose(out->stream);
+		out->stream = NULL;
+		out->discont = false;
+	}
+
+	if (out->stream)
 		return 0;
+
+	snprintf(filename, sizeof (filename),
+		 "%s/%03u.%s.%s", opt_output_dir,
+		 qap_outputs_configure_count, out->name,
+		 audio_format_extension(out->config.format));
+
+	out->stream = fopen(filename, "w");
+	if (!out->stream) {
+		err("failed to create output file %s: %m", filename);
+		return -1;
+	}
 
 	if (!format_is_pcm(out->config.format)) {
 		// nothing to do here
@@ -1330,6 +1457,17 @@ init_outputs(void)
 	}
 }
 
+static void
+shutdown_outputs(void)
+{
+	for (int i = 0; i < MAX_OUTPUTS; i++) {
+		struct qap_output_ctx *output = &qap_outputs[i];
+
+		if (output->stream)
+			fclose(output->stream);
+	}
+}
+
 static int
 configure_outputs(int num_outputs, enum output_type *outputs)
 {
@@ -1390,6 +1528,19 @@ configure_outputs(int num_outputs, enum output_type *outputs)
 			err("qap: QAP_SESSION_CMD_SET_KVPAIRS command failed");
 			return 1;
 		}
+	}
+
+	qap_outputs_configure_count++;
+
+	for (int i = 0; i < MAX_OUTPUTS; i++) {
+		struct qap_output_ctx *output = &qap_outputs[i];
+		bool enabled = outputs_present & (1 << i);
+
+		output->discont = enabled != output->enabled;
+		output->enabled = enabled;
+
+		if (!output->enabled && output->stream)
+			fflush(output->stream);
 	}
 
 	/* setup outputs */
@@ -1540,7 +1691,7 @@ static void usage(void)
 		"  -p, --primary-stream=<n>     audio primary stream number to decode\n"
 		"  -s, --secondary-stream=<n>   audio secondary stream number to decode\n"
 		"  -t, --session-type=<type>    session type (broadcast, decode, encode, ott)\n"
-		"  -o, --output=<path>          output data to file instead of stdout\n"
+		"  -o, --output-dir=<path>      output data to files in the specified dir path\n"
 		"  -c, --channels=<channels>    maximum number of channels to output\n"
 		"  -k, --kvpairs=<kvpairs>      pass kvpairs string to the decoder backend\n"
 		"  -l, --loops=<count>          number of times the stream will be decoded\n"
@@ -1565,7 +1716,7 @@ static const struct option long_options[] = {
 	{ "interactive",       no_argument,       0, 'i' },
 	{ "kvpairs",           required_argument, 0, 'k' },
 	{ "loops",             required_argument, 0, 'l' },
-	{ "output",            required_argument, 0, 'o' },
+	{ "output-dir",        required_argument, 0, 'o' },
 	{ "session-type",      required_argument, 0, 't' },
 	{ "format",            required_argument, 0, 'f' },
 	{ "primary-stream",    required_argument, 0, 'p' },
@@ -1592,7 +1743,6 @@ int main(int argc, char **argv)
 	enum output_type outputs[2];
 	unsigned int num_outputs = 0;
 	char *kvpairs = NULL;
-	FILE *output_stream = NULL;
 	struct ffmpeg_src **src = qap_inputs;
 	const char *src_url[MAX_MODULES] = { };
 	const char *src_format[MAX_MODULES] = { };
@@ -1653,16 +1803,7 @@ int main(int argc, char **argv)
 			secondary_stream_index = atoi(optarg);
 			break;
 		case 'o':
-			if (!strcmp(optarg, "-"))
-				output_stream = stdout;
-			else
-				output_stream = fopen(optarg, "w");
-
-			if (!output_stream) {
-				err("cannot open file `%s' for writing: %m",
-				    optarg);
-				return 1;
-			}
+			opt_output_dir = optarg;
 			break;
 		case 't':
 			if (!strncmp(optarg, "br", 2))
@@ -1719,6 +1860,11 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	if (opt_output_dir && mkdir_p(opt_output_dir, 0777)) {
+		err("failed to create output directory %s: %m", opt_output_dir);
+		return 1;
+	}
+
 	if (num_outputs == 0)
 		outputs[num_outputs++] = OUTPUT_5DOT1;
 
@@ -1730,7 +1876,6 @@ int main(int argc, char **argv)
 	avdevice_register_all();
 
 	init_outputs();
-	qap_outputs[outputs[0]].stream = output_stream;
 
 	if (kbd_enable)
 		kbd_enable = !pthread_create(&kbd_tid, NULL, kbd_thread, NULL);
@@ -1964,8 +2109,7 @@ again:
 	if (qap_unload_library(qap_lib))
 		err("qap: failed to unload library");
 
-	if (output_stream && output_stream != stdout)
-		fclose(output_stream);
+	shutdown_outputs();
 
 	return decode_err;
 }
