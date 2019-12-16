@@ -645,9 +645,9 @@ static void handle_output_delay(qap_output_delay_t *delay)
 	    output->delay.buffering_delay == delay->buffering_delay &&
 	    output->delay.non_main_data_length == delay->non_main_data_length &&
 	    output->delay.non_main_data_offset == delay->non_main_data_offset)
-		log_level = 3;
+		log_level = 4;
 	else
-		log_level = 2;
+		log_level = 3;
 
 	print(log_level, "qap: out %s: delay: "
 	      "algo_delay=%u/%ums "
@@ -1943,7 +1943,7 @@ again:
 		}
 
 		qap_lib_set_log_callback(qap_lib, handle_log_msg);
-		qap_lib_set_log_level(qap_lib, debug_level - 1);
+		qap_lib_set_log_level(qap_lib, debug_level - 3);
 	}
 
 	/* init QAP session */
