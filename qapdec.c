@@ -50,7 +50,7 @@
 #endif
 
 #ifndef QAP_LIB_DOLBY_MS12
-# define QAP_LIB_DOLBY_MS12 "/usr/lib64/libdolby_ms12_wrapper.so"
+# define QAP_LIB_DOLBY_MS12 "/usr/lib64/libdolby_ms12_wrapper_prod.so"
 #endif
 
 #define AUDIO_OUTPUT_ID_BASE 0x100
