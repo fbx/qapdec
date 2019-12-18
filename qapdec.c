@@ -896,6 +896,52 @@ stream_send_eos(struct stream *stream)
 	return 0;
 }
 
+static uint32_t
+stream_get_buffer_size(struct stream *stream)
+{
+	uint32_t param_id = MS12_STREAM_GET_PCM_INPUT_BUF_SIZE;
+	uint32_t buffer_size = 0;
+	uint32_t reply_size = sizeof (buffer_size);
+	int ret;
+
+	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_GET_PARAM,
+			     sizeof (param_id), &param_id,
+			     &reply_size, &buffer_size);
+	if (ret < 0) {
+		err("%s: failed to get buffer size", stream->name);
+		return 0;
+	}
+
+	return buffer_size;
+}
+
+static int
+stream_set_buffer_size(struct stream *stream, uint32_t buffer_size)
+{
+	uint32_t params[] = { MS12_STREAM_SET_PCM_INPUT_BUF_SIZE, buffer_size };
+	uint32_t new_buffer_size;
+	int ret;
+
+	info(" in: %s: set buffer size %u bytes", stream->name, buffer_size);
+
+	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_SET_PARAM,
+			     sizeof (params), params, NULL, NULL);
+	if (ret < 0) {
+		err("%s: failed to set buffer size %u", stream->name,
+		    buffer_size);
+		return -1;
+	}
+
+	new_buffer_size = stream_get_buffer_size(stream);
+	if (buffer_size != new_buffer_size) {
+		err("%s: buffer size %u not set, actual size is %u bytes",
+		    stream->name, buffer_size, new_buffer_size);
+		return -1;
+	}
+
+	return 0;
+}
+
 static void
 stream_terminate(struct stream *stream)
 {
@@ -1091,6 +1137,23 @@ stream_create(AVStream *avstream, qap_module_flags_t qap_flags)
 				goto fail;
 			}
 		}
+	}
+
+	if (format_is_pcm(qap_format)) {
+		uint32_t buffer_size;
+
+		buffer_size = stream_get_buffer_size(stream);
+		if (buffer_size > 0) {
+			info(" in: %s: default buffer size %u bytes",
+			     stream->name, buffer_size);
+		}
+
+		/* set 32ms buffer size */
+		buffer_size = qap_mod_cfg.sample_rate *
+			qap_mod_cfg.channels * qap_mod_cfg.bit_width / 8 *
+			32 / 1000;
+
+		stream_set_buffer_size(stream, buffer_size);
 	}
 
 	if (stream_start(stream))
