@@ -581,7 +581,7 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	int id = buffer->buffer_parms.output_buf_params.output_id;
 	struct qap_output_ctx *output = get_qap_output(id);
 
-	dbg("qap: out %s: pcm buffer size=%u pts=%" PRIi64
+	dbg("out: %s: pcm buffer size=%u pts=%" PRIi64
 	    " duration=%" PRIi64 " last_diff=%" PRIi64,
 	    output->name,
 	    buffer->common_params.size, buffer->common_params.timestamp,
@@ -609,7 +609,7 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 		if (delay <= 0)
 			return;
 
-		dbg("qap: out %s: wait %" PRIi64 "us for sync",
+		dbg("out: %s: wait %" PRIi64 "us for sync",
 		    output->name, delay);
 
 		usleep(delay);
@@ -621,7 +621,7 @@ static void handle_output_config(qap_output_buff_params_t *out_buffer)
 	qap_output_config_t *cfg = &out_buffer->output_config;
 	struct qap_output_ctx *output = get_qap_output(out_buffer->output_id);
 
-	info("qap: out %s: config: id=0x%x format=%s sr=%d ss=%d "
+	info("out: %s: config: id=0x%x format=%s sr=%d ss=%d "
 	     "interleaved=%d channels=%d chmap[%s]",
 	     output->name, cfg->id,
 	     audio_format_to_str(cfg->format),
@@ -649,7 +649,7 @@ static void handle_output_delay(qap_output_delay_t *delay)
 	else
 		log_level = 3;
 
-	print(log_level, "qap: out %s: delay: "
+	print(log_level, "out: %s: delay: "
 	      "algo_delay=%u/%ums "
 	      "buffering_delay=%u/%ums "
 	      "non_main_data_offset=%u "
@@ -724,7 +724,7 @@ static void handle_qap_session_event(qap_session_handle_t session, void *priv,
 
 static void handle_input_config(struct stream *stream, qap_input_config_t *cfg)
 {
-	info("qap: in %s: format sr=%u ss=%u channels=%u",
+	info(" in: %s: format sr=%u ss=%u channels=%u",
 	     stream->name, cfg->sample_rate, cfg->bit_width, cfg->channels);
 }
 
@@ -742,7 +742,7 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 			    sizeof (qap_send_buffer_t));
 		} else {
 			qap_send_buffer_t *buf = data;
-			dbg("qap: in %s: %u bytes avail", stream->name,
+			dbg(" in: %s: %u bytes avail", stream->name,
 			    buf->bytes_available);
 		}
 		pthread_mutex_lock(&stream->lock);
@@ -766,7 +766,7 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 
 static void wait_buffer_available(struct stream *stream)
 {
-	dbg(" dec: in %s: wait buffer", stream->name);
+	dbg(" in: %s: wait buffer", stream->name);
 
 	pthread_mutex_lock(&stream->lock);
 	while (!stream->terminated && stream->buffer_full)
@@ -795,16 +795,16 @@ stream_start(struct stream *stream)
 	int ret;
 
 	if (stream->state == STREAM_STATE_STARTED) {
-		info("qap: in %s: already started", stream->name);
+		info(" in: %s: already started", stream->name);
 		return 0;
 	}
 
-	info("qap: in %s: start", stream->name);
+	info(" in: %s: start", stream->name);
 
 	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_START,
 			     0, NULL, NULL, NULL);
 	if (ret) {
-		err("qap: QAP_SESSION_CMD_START command failed");
+		err("QAP_SESSION_CMD_START command failed");
 		return 1;
 	}
 
@@ -819,16 +819,16 @@ stream_pause(struct stream *stream)
 	int ret;
 
 	if (stream->state != STREAM_STATE_STARTED) {
-		info("qap: in %s: cannot pause, not started", stream->name);
+		info(" in: %s: cannot pause, not started", stream->name);
 		return 0;
 	}
 
-	info("qap: in %s: pause", stream->name);
+	info(" in: %s: pause", stream->name);
 
 	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_PAUSE,
 			     0, NULL, NULL, NULL);
 	if (ret) {
-		err("qap: QAP_SESSION_CMD_PAUSE command failed");
+		err("QAP_SESSION_CMD_PAUSE command failed");
 		return 1;
 	}
 
@@ -843,16 +843,16 @@ stream_stop(struct stream *stream)
 	int ret;
 
 	if (stream->state == STREAM_STATE_STOPPED) {
-		info("qap: in %s: already stopped", stream->name);
+		info(" in: %s: already stopped", stream->name);
 		return 0;
 	}
 
-	info("qap: in %s: stop", stream->name);
+	info(" in: %s: stop", stream->name);
 
 	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_STOP,
 			     0, NULL, NULL, NULL);
 	if (ret) {
-		err("qap: QAP_SESSION_CMD_STOP command failed");
+		err("QAP_SESSION_CMD_STOP command failed");
 		return 1;
 	}
 
@@ -875,7 +875,7 @@ stream_send_eos(struct stream *stream)
 
 	ret = qap_module_process(stream->module, &qap_buffer);
 	if (ret) {
-		err("qap: in %s: failed to send eos, err %d",
+		err("%s: failed to send eos, err %d",
 		    stream->name, ret);
 		return 1;
 	}
@@ -899,7 +899,7 @@ stream_destroy(struct stream *stream)
 		return;
 
 	if (stream->module && qap_module_deinit(stream->module))
-		err("qap: failed to deinit %s module", stream->name);
+		err("failed to deinit %s module", stream->name);
 
 	if (stream->avmux)
 		avformat_free_context(stream->avmux);
@@ -1017,13 +1017,13 @@ stream_create(AVStream *avstream, qap_module_flags_t qap_flags)
 	}
 
 	if (qap_module_init(qap_session, &qap_mod_cfg, &stream->module)) {
-		err("qap: failed to init module");
+		err("failed to init module");
 		goto fail;
 	}
 
 	if (qap_module_set_callback(stream->module,
 				    handle_qap_module_event, stream)) {
-		err("qap: failed to set module callback");
+		err("failed to set module callback");
 		goto fail;
 	}
 
@@ -1129,14 +1129,14 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 		delay = qap_buffer.common_params.timestamp - now - 10000;
 
 		if (delay > 0) {
-			dbg("dec: %s: wait %" PRIi64 "us",
+			dbg(" in: %s: wait %" PRIi64 "us",
 			    stream->name, delay);
 			usleep(delay);
 		}
 	}
 
-	dbg(" in: %s: terminated=%d buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
-	    stream->name, stream->terminated, size, pts, qap_buffer.common_params.timestamp);
+	dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
+	    stream->name, size, pts, qap_buffer.common_params.timestamp);
 
 	while (!stream->terminated &&
 	       qap_buffer.common_params.offset < qap_buffer.common_params.size) {
@@ -1150,17 +1150,17 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 
 		ret = qap_module_process(stream->module, &qap_buffer);
 		if (ret < 0) {
-			dbg("dec: %s: full, %" PRIu64 " bytes written",
+			dbg(" in: %s: full, %" PRIu64 " bytes written",
 			    stream->name, stream->written_bytes);
 			wait_buffer_available(stream);
 		} else if (ret == 0) {
-			err("dec: %s: decoder returned zero size",
+			err("%s: decoder returned zero size",
 			    stream->name);
 			break;
 		} else {
 			qap_buffer.common_params.offset += ret;
 			stream->written_bytes += ret;
-			dbg("dec: %s: written %d bytes in %dus, total %" PRIu64,
+			dbg(" in: %s: written %d bytes in %dus, total %" PRIu64,
 			    stream->name, ret, (int)(get_time() - t),
 			    stream->written_bytes);
 		}
@@ -1526,7 +1526,7 @@ configure_outputs(int num_outputs, enum output_type *outputs)
 		ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_KVPAIRS,
 				      strlen(params) + 1, params, NULL, NULL);
 		if (ret) {
-			err("qap: QAP_SESSION_CMD_SET_KVPAIRS command failed");
+			err("QAP_SESSION_CMD_SET_KVPAIRS command failed");
 			return 1;
 		}
 	}
@@ -1549,7 +1549,7 @@ configure_outputs(int num_outputs, enum output_type *outputs)
 			      sizeof (qap_session_cfg), &qap_session_cfg,
 			      NULL, NULL);
 	if (ret) {
-		err("qap: QAP_SESSION_CMD_SET_CONFIG command failed");
+		err("QAP_SESSION_CMD_SET_CONFIG command failed");
 		return 1;
 	}
 
@@ -1939,7 +1939,7 @@ again:
 	if (!qap_lib) {
 		qap_lib = qap_load_library(qap_lib_name);
 		if (!qap_lib) {
-			err("qap: failed to load library %s", qap_lib_name);
+			err("failed to load library %s", qap_lib_name);
 			return 1;
 		}
 
@@ -1950,7 +1950,7 @@ again:
 	/* init QAP session */
 	qap_session = qap_session_open(qap_session_type, qap_lib);
 	if (!qap_session) {
-		err("qap: failed to open session");
+		err("failed to open session");
 		return 1;
 	}
 
@@ -1964,7 +1964,7 @@ again:
 		ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_KVPAIRS,
 				      strlen(kvpairs) + 1, kvpairs, NULL, NULL);
 		if (ret) {
-			err("qap: QAP_SESSION_CMD_SET_KVPAIRS command failed");
+			err("QAP_SESSION_CMD_SET_KVPAIRS command failed");
 			return 1;
 		}
 	}
@@ -2071,7 +2071,7 @@ again:
 	}
 
 	if (qap_session_close(qap_session))
-		err("qap: failed to close session");
+		err("failed to close session");
 
 	end_time = get_time();
 
@@ -2108,7 +2108,7 @@ again:
 	}
 
 	if (qap_unload_library(qap_lib))
-		err("qap: failed to unload library");
+		err("failed to unload library");
 
 	shutdown_outputs();
 
