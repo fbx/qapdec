@@ -113,6 +113,7 @@ static pthread_cond_t qap_cond = PTHREAD_COND_INITIALIZER;
 
 static bool qap_eos_received;
 static const char *qap_lib_name;
+static bool qap_chmod_locking;
 
 enum kbd_command {
 	KBD_NONE,
@@ -1662,18 +1663,7 @@ static void kbd_handle_key(char key[3])
 {
 	enum kbd_command cmd = kbd_pending_command;
 
-	if (key[0] == 'p') {
-		kbd_pending_command = KBD_PLAYPAUSE;
-		notice("Enter stream number to send Play/Pause to");
-	} else if (key[0] == 's') {
-		kbd_pending_command = KBD_STOP;
-		notice("Enter stream number to Stop");
-	} else if (key[0] == 'b') {
-		kbd_pending_command = KBD_BLOCK;
-		notice("Enter stream number to Block/Unblock");
-	} else {
-		kbd_pending_command = KBD_NONE;
-	}
+	kbd_pending_command = KBD_NONE;
 
 	if (key[0] >= '1' && key[0] <= '9') {
 		struct stream *stream;
@@ -1703,9 +1693,38 @@ static void kbd_handle_key(char key[3])
 		case KBD_BLOCK:
 			stream_block(stream, !stream->blocked);
 			break;
-		case KBD_NONE:
+		default:
 			break;
 		}
+	}
+
+	if (key[0] == 'p') {
+		kbd_pending_command = KBD_PLAYPAUSE;
+		notice("Enter stream number to send Play/Pause to");
+
+	} else if (key[0] == 's') {
+		kbd_pending_command = KBD_STOP;
+		notice("Enter stream number to Stop");
+
+	} else if (key[0] == 'b') {
+		kbd_pending_command = KBD_BLOCK;
+		notice("Enter stream number to Block/Unblock");
+
+	} else if (key[0] == 'c') {
+		char kvpairs[32];
+		int val, ret;
+
+		val = !qap_chmod_locking;
+		snprintf(kvpairs, sizeof (kvpairs), "chmod_locking=%d", val);
+
+		notice("%s chmod_locking", val ? "Enable" : "Disable");
+
+		ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_KVPAIRS,
+				      strlen(kvpairs) + 1, kvpairs, NULL, NULL);
+		if (ret)
+			err("qap: QAP_SESSION_CMD_SET_KVPAIRS command failed");
+		else
+			qap_chmod_locking = val;
 	}
 }
 
