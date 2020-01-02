@@ -118,6 +118,7 @@ enum kbd_command {
 	KBD_NONE,
 	KBD_PLAYPAUSE,
 	KBD_STOP,
+	KBD_BLOCK,
 };
 
 static int kbd_ev = -1;
@@ -141,6 +142,7 @@ struct stream {
 	pthread_cond_t cond;
 	bool buffer_full;
 	bool terminated;
+	bool blocked;
 	enum stream_state state;
 	uint64_t start_time;
 	uint64_t written_bytes;
@@ -862,6 +864,17 @@ stream_stop(struct stream *stream)
 }
 
 static int
+stream_block(struct stream *stream, bool block)
+{
+	pthread_mutex_lock(&stream->lock);
+	stream->blocked = block;
+	pthread_cond_signal(&stream->cond);
+	pthread_mutex_unlock(&stream->lock);
+
+	return 0;
+}
+
+static int
 stream_send_eos(struct stream *stream)
 {
 	qap_audio_buffer_t qap_buffer;
@@ -1311,6 +1324,11 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 		goto out;
 	}
 
+	pthread_mutex_lock(&stream->lock);
+	while (stream->blocked && !stream->terminated)
+		pthread_cond_wait(&stream->cond, &stream->lock);
+	pthread_mutex_unlock(&stream->lock);
+
 	if (stream->insert_adts_header) {
 		/* packets should have AV_INPUT_BUFFER_PADDING_SIZE padding in
 		 * them, so we can use that to avoid a copy */
@@ -1583,10 +1601,13 @@ static void kbd_handle_key(char key[3])
 
 	if (key[0] == 'p') {
 		kbd_pending_command = KBD_PLAYPAUSE;
-		notice("Enter stream number");
+		notice("Enter stream number to send Play/Pause to");
 	} else if (key[0] == 's') {
 		kbd_pending_command = KBD_STOP;
-		notice("Enter stream number");
+		notice("Enter stream number to Stop");
+	} else if (key[0] == 'b') {
+		kbd_pending_command = KBD_BLOCK;
+		notice("Enter stream number to Block/Unblock");
 	} else {
 		kbd_pending_command = KBD_NONE;
 	}
@@ -1615,6 +1636,9 @@ static void kbd_handle_key(char key[3])
 			break;
 		case KBD_STOP:
 			stream_stop(stream);
+			break;
+		case KBD_BLOCK:
+			stream_block(stream, !stream->blocked);
 			break;
 		case KBD_NONE:
 			break;
