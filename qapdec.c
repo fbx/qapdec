@@ -2282,7 +2282,7 @@ again:
 		     frames * 1000000 / duration);
 	}
 
-	if (src_duration > 0 && !decode_err) {
+	if (src_duration > 0 && !quit) {
 		notice("render speed: %.2fx realtime",
 		       (float)src_duration / (float)(end_time - start_time));
 	}
