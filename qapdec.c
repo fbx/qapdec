@@ -148,6 +148,7 @@ struct stream {
 	bool blocked;
 	enum stream_state state;
 	uint64_t start_time;
+	uint64_t state_change_time;
 	uint64_t written_bytes;
 };
 
@@ -776,8 +777,19 @@ static void wait_buffer_available(struct stream *stream)
 	dbg(" in: %s: wait buffer", stream->name);
 
 	pthread_mutex_lock(&stream->lock);
-	while (!stream->terminated && stream->buffer_full)
-		pthread_cond_wait(&stream->cond, &stream->lock);
+	while (!stream->terminated && stream->buffer_full) {
+		struct timespec delay;
+
+		clock_gettime(CLOCK_REALTIME, &delay);
+		delay.tv_sec++;
+
+		if (pthread_cond_timedwait(&stream->cond, &stream->lock,
+					   &delay) == ETIMEDOUT &&
+		    stream->state == STREAM_STATE_STARTED) {
+			err("%s: stalled, buffer has been full for 1 second",
+			    stream->name);
+		}
+	}
 	pthread_mutex_unlock(&stream->lock);
 }
 
@@ -816,6 +828,7 @@ stream_start(struct stream *stream)
 	}
 
 	stream->state = STREAM_STATE_STARTED;
+	stream->state_change_time = get_time();
 
 	return 0;
 }
@@ -840,6 +853,7 @@ stream_pause(struct stream *stream)
 	}
 
 	stream->state = STREAM_STATE_PAUSED;
+	stream->state_change_time = get_time();
 
 	return 0;
 }
@@ -864,6 +878,7 @@ stream_stop(struct stream *stream)
 	}
 
 	stream->state = STREAM_STATE_STOPPED;
+	stream->state_change_time = get_time();
 
 	return 0;
 }
@@ -1495,6 +1510,13 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 	} else {
 		/* push the audio frame to the decoder */
 		ret = stream_write(stream, pkt.data, pkt.size, pkt.pts);
+	}
+
+	if (stream->state == STREAM_STATE_PAUSED &&
+	    get_time() - stream->state_change_time > 1000000) {
+		stream->state_change_time = get_time();
+		err("%s: input still being consumed 1 second after pause",
+		    stream->name);
 	}
 
 out:
