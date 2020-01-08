@@ -23,7 +23,7 @@
 #define print(l, msg, ...)						\
 	do {								\
 		if (debug_level >= l)					\
-			fprintf(stderr, msg, ##__VA_ARGS__);		\
+			fprintf(stderr, "[%08" PRIu64 "] " msg, (get_time() - clock_base_time) / 1000, ##__VA_ARGS__);		\
 	} while (0)
 
 #define err(msg, ...) \
@@ -67,6 +67,7 @@
 qap_lib_handle_t qap_lib;
 qap_session_handle_t qap_session;
 unsigned int qap_outputs_configure_count;
+uint64_t clock_base_time;
 
 int debug_level = 1;
 bool opt_render_realtime;
@@ -1861,6 +1862,7 @@ int main(int argc, char **argv)
 	qap_session_t qap_session_type;
 	AVStream *avstream;
 
+	clock_base_time = get_time();
 	qap_session_type = QAP_SESSION_BROADCAST;
 
 	while ((opt = getopt_long(argc, argv, "c:f:hik:l:o:p:s:t:v",
