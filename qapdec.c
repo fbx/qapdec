@@ -44,6 +44,8 @@
 #define CASESTR(ENUM) case ENUM: return #ENUM;
 
 #define ARRAY_SIZE(x)	(sizeof (x) / sizeof (*(x)))
+#define MIN(a, b)	((a) < (b) ? (a) : (b))
+#define MAX(a, b)	((a) > (b) ? (a) : (b))
 
 #ifndef QAP_LIB_DTS_M8
 # define QAP_LIB_DTS_M8 "libdts_m8_wrapper.so"
@@ -143,6 +145,7 @@ struct stream {
 	qap_input_config_t config;
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
+	int buffer_size;
 	bool buffer_full;
 	bool terminated;
 	bool blocked;
@@ -1217,7 +1220,10 @@ stream_create(AVStream *avstream, qap_module_flags_t qap_flags)
 			qap_mod_cfg.channels * qap_mod_cfg.bit_width / 8 *
 			32 / 1000;
 
-		stream_set_buffer_size(stream, buffer_size);
+		if (stream_set_buffer_size(stream, buffer_size))
+			goto fail;
+
+		stream->buffer_size = buffer_size;
 	}
 
 	if (stream_start(stream))
@@ -1235,15 +1241,13 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 {
 	qap_audio_buffer_t qap_buffer;
 	qap_marker marker;
+	int offset = 0;
 	int ret;
 
 	if (stream->written_bytes == 0)
 		stream->start_time = get_time();
 
 	memset(&qap_buffer, 0, sizeof (qap_buffer));
-	qap_buffer.common_params.data = data;
-	qap_buffer.common_params.size = size;
-	qap_buffer.common_params.offset = 0;
 
 	if (pts == AV_NOPTS_VALUE) {
 		qap_buffer.common_params.timestamp = 0;
@@ -1279,9 +1283,16 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 	dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
 	    stream->name, size, pts, qap_buffer.common_params.timestamp);
 
-	while (!stream->terminated &&
-	       qap_buffer.common_params.offset < qap_buffer.common_params.size) {
+	while (!stream->terminated && offset < size) {
 		uint64_t t;
+
+		qap_buffer.common_params.offset = 0;
+		qap_buffer.common_params.data = data + offset;
+		qap_buffer.common_params.size = size - offset;
+
+		if (stream->buffer_size > 0 &&
+		    qap_buffer.common_params.size > stream->buffer_size)
+			qap_buffer.common_params.size = stream->buffer_size;
 
 		pthread_mutex_lock(&stream->lock);
 		stream->buffer_full = true;
@@ -1299,11 +1310,18 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 			    stream->name);
 			break;
 		} else {
-			qap_buffer.common_params.offset += ret;
+			offset += ret;
 			stream->written_bytes += ret;
+
 			dbg(" in: %s: written %d bytes in %dus, total %" PRIu64,
 			    stream->name, ret, (int)(get_time() - t),
 			    stream->written_bytes);
+
+			qap_buffer.common_params.timestamp = 0;
+			qap_buffer.buffer_parms.input_buf_params.flags =
+				QAP_BUFFER_TSTAMP_CONTINUE;
+
+			assert(offset <= size);
 		}
 	}
 
