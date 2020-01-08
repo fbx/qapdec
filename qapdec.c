@@ -140,6 +140,7 @@ struct stream {
 	bool insert_adts_header;
 	qap_module_handle_t module;
 	qap_module_flags_t flags;
+	qap_input_config_t config;
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 	bool buffer_full;
@@ -730,6 +731,8 @@ static void handle_input_config(struct stream *stream, qap_input_config_t *cfg)
 {
 	info(" in: %s: format sr=%u ss=%u channels=%u",
 	     stream->name, cfg->sample_rate, cfg->bit_width, cfg->channels);
+
+	stream->config = *cfg;
 }
 
 static void handle_qap_module_event(qap_module_handle_t module, void *priv,
@@ -940,6 +943,50 @@ stream_set_buffer_size(struct stream *stream, uint32_t buffer_size)
 		    stream->name, buffer_size, new_buffer_size);
 		return -1;
 	}
+
+	return 0;
+}
+
+static uint64_t
+stream_get_decoded_frames(struct stream *stream)
+{
+	uint32_t param_id = MS12_STREAM_GET_DECODER_OUTPUT_FRAME;
+	uint32_t bytes_consumed = 0;
+	uint32_t reply_size = sizeof (bytes_consumed);
+	int ret;
+
+	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_GET_PARAM,
+			     sizeof (param_id), &param_id,
+			     &reply_size, &bytes_consumed);
+	if (ret < 0) {
+		err("%s: failed to get decoded frames", stream->name);
+		return 0;
+	}
+
+	assert(reply_size == sizeof (bytes_consumed));
+
+	return bytes_consumed / stream->config.sample_rate;
+}
+
+static int
+stream_get_input_markers(struct stream *stream, qap_marker *marker)
+{
+	uint32_t param_id = MS12_STREAM_GET_CONSUMED_FRAMES;
+	uint32_t reply_size = sizeof (*marker);
+	int ret;
+
+	if (!marker)
+		return -1;
+
+	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_GET_PARAM,
+			     sizeof (param_id), &param_id,
+			     &reply_size, marker);
+	if (ret < 0) {
+		err("%s: failed to get consumed frames", stream->name);
+		return -1;
+	}
+
+	assert(reply_size == sizeof (*marker));
 
 	return 0;
 }
@@ -1172,6 +1219,7 @@ static int
 stream_write(struct stream *stream, void *data, int size, int64_t pts)
 {
 	qap_audio_buffer_t qap_buffer;
+	qap_marker marker;
 	int ret;
 
 	if (stream->written_bytes == 0)
@@ -1246,6 +1294,16 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 
 	if (stream->terminated)
 		return -1;
+
+	if (stream->flags == QAP_MODULE_FLAG_PRIMARY) {
+		dbg(" in: %s: generated %" PRIu64 " frames", stream->name,
+		    stream_get_decoded_frames(stream));
+	}
+
+	if (!stream_get_input_markers(stream, &marker)) {
+		dbg(" in: %s: input marker from=%llu to=%llu", stream->name,
+		    marker.from_marker, marker.to_marker);
+	}
 
 	return size;
 }
