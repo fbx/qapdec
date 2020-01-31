@@ -963,21 +963,21 @@ static uint64_t
 stream_get_decoded_frames(struct stream *stream)
 {
 	uint32_t param_id = MS12_STREAM_GET_DECODER_OUTPUT_FRAME;
-	uint64_t bytes_consumed = 0;
-	uint32_t reply_size = sizeof (bytes_consumed);
+	uint64_t frames = 0;
+	uint32_t reply_size = sizeof (frames);
 	int ret;
 
 	ret = qap_module_cmd(stream->module, QAP_MODULE_CMD_GET_PARAM,
 			     sizeof (param_id), &param_id,
-			     &reply_size, &bytes_consumed);
+			     &reply_size, &frames);
 	if (ret < 0) {
 		err("%s: failed to get decoded frames", stream->name);
 		return 0;
 	}
 
-	assert(reply_size == sizeof (bytes_consumed));
+	assert(reply_size == sizeof (frames));
 
-	return bytes_consumed / stream->config.sample_rate;
+	return frames;
 }
 
 static int
