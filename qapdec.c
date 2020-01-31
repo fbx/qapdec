@@ -59,13 +59,6 @@
 
 #define ADTS_HEADER_SIZE 7
 
-/* MS12 bitstream output mode */
-#define MS12_KEY_BS_OUT_MODE		"bs_out_mode"
-#define MS12_BS_OUT_MODE_PCM		0
-#define MS12_BS_OUT_MODE_DD		1
-#define MS12_BS_OUT_MODE_DDP		2
-#define MS12_BS_OUT_MODE_ALL		3
-
 qap_lib_handle_t qap_lib;
 qap_session_handle_t qap_session;
 unsigned int qap_outputs_configure_count;
@@ -1688,28 +1681,6 @@ configure_outputs(int num_outputs, enum output_type *outputs)
 		outputs_present |= 1 << id;
 		output_cfg->id = AUDIO_OUTPUT_ID_BASE + id;
 		qap_session_cfg.num_output++;
-	}
-
-	/* set BS mode for MS12 */
-	if (!strcmp(qap_lib_name, QAP_LIB_DOLBY_MS12)) {
-		int bs_mode;
-		char params[32];
-
-		if (outputs_present & (1 << OUTPUT_EAC3))
-			bs_mode = MS12_BS_OUT_MODE_DDP;
-		else if (outputs_present & (1 << OUTPUT_AC3))
-			bs_mode = MS12_BS_OUT_MODE_DD;
-		else
-			bs_mode = MS12_BS_OUT_MODE_PCM;
-
-		sprintf(params, "%s=%d", MS12_KEY_BS_OUT_MODE, bs_mode);
-
-		ret = qap_session_cmd(qap_session, QAP_SESSION_CMD_SET_KVPAIRS,
-				      strlen(params) + 1, params, NULL, NULL);
-		if (ret) {
-			err("QAP_SESSION_CMD_SET_KVPAIRS command failed");
-			return 1;
-		}
 	}
 
 	qap_outputs_configure_count++;
