@@ -962,7 +962,7 @@ static uint64_t
 stream_get_decoded_frames(struct stream *stream)
 {
 	uint32_t param_id = MS12_STREAM_GET_DECODER_OUTPUT_FRAME;
-	uint32_t bytes_consumed = 0;
+	uint64_t bytes_consumed = 0;
 	uint32_t reply_size = sizeof (bytes_consumed);
 	int ret;
 
