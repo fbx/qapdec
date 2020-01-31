@@ -86,6 +86,7 @@ enum module_type {
 	MODULE_SYSTEM_SOUND,
 	MODULE_APP_SOUND,
 	MODULE_OTT_SOUND,
+	MODULE_EXTERN_PCM,
 	MAX_MODULES,
 };
 
@@ -1054,6 +1055,9 @@ stream_create(AVStream *avstream, qap_module_flags_t qap_flags)
 	case QAP_MODULE_FLAG_OTT_SOUND:
 		name = "OTT_SOUND";
 		break;
+	case QAP_MODULE_FLAG_EXTERN_PCM:
+		name = "EXTERN_PCM";
+		break;
 	default:
 		err("unknown qap module flags %x\n", qap_flags);
 		return NULL;
@@ -1877,9 +1881,11 @@ static void usage(void)
 		"      --sys-source=<url>       source for system sound module\n"
 		"      --app-source=<url>       source for app sound module\n"
 		"      --ott-source=<url>       source for ott sound module\n"
+		"      --ext-source=<url>       source for extern pcm module\n"
 		"      --sys-format=<fmt>       format for system sound module\n"
 		"      --app-format=<fmt>       format for app sound module\n"
 		"      --ott-format=<fmt>       format for ott sound module\n"
+		"      --ext-format=<fmt>       format for extern pcm module\n"
 		"\n"
 		"Example usage to feed generate sine wave audio and decode an AC3 file:\n"
 		"  qapdec -c 2 --sys-format lavfi --sys-source sine /data/test.ac3\n"
@@ -1906,6 +1912,8 @@ static const struct option long_options[] = {
 	{ "app-format",        required_argument, 0, '5' },
 	{ "ott-source",        required_argument, 0, '6' },
 	{ "ott-format",        required_argument, 0, '7' },
+	{ "ext-source",        required_argument, 0, '8' },
+	{ "ext-format",        required_argument, 0, '9' },
 	{ 0,                   0,                 0,  0  }
 };
 
@@ -2021,6 +2029,12 @@ int main(int argc, char **argv)
 			break;
 		case '7':
 			src_format[MODULE_OTT_SOUND] = optarg;
+			break;
+		case '8':
+			src_url[MODULE_EXTERN_PCM] = optarg;
+			break;
+		case '9':
+			src_format[MODULE_EXTERN_PCM] = optarg;
 			break;
 		case 'h':
 			usage();
@@ -2192,6 +2206,13 @@ again:
 	if (src[MODULE_OTT_SOUND]) {
 		ret = ffmpeg_src_map_stream(src[MODULE_OTT_SOUND], -1,
 					    QAP_MODULE_FLAG_OTT_SOUND);
+		if (ret)
+			return 1;
+	}
+
+	if (src[MODULE_EXTERN_PCM]) {
+		ret = ffmpeg_src_map_stream(src[MODULE_EXTERN_PCM], -1,
+					    QAP_MODULE_FLAG_EXTERN_PCM);
 		if (ret)
 			return 1;
 	}
