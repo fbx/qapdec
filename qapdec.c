@@ -1298,10 +1298,13 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 		t = get_time();
 
 		ret = qap_module_process(stream->module, &qap_buffer);
-		if (ret < 0) {
+		if (ret == -EAGAIN) {
 			dbg(" in: %s: full, %" PRIu64 " bytes written",
 			    stream->name, stream->written_bytes);
 			wait_buffer_available(stream);
+		} else if (ret < 0) {
+			err("%s: qap_module_process error %d", stream->name, ret);
+			return -1;
 		} else if (ret == 0) {
 			err("%s: decoder returned zero size",
 			    stream->name);
