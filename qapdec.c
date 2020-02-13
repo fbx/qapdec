@@ -82,6 +82,7 @@ enum output_type {
 
 enum module_type {
 	MODULE_PRIMARY,
+	MODULE_PRIMARY_2,
 	MODULE_SECONDARY,
 	MODULE_SYSTEM_SOUND,
 	MODULE_APP_SOUND,
@@ -1058,38 +1059,14 @@ stream_destroy(struct stream *stream)
 }
 
 static struct stream *
-stream_create(AVStream *avstream, qap_module_flags_t qap_flags)
+stream_create(const char *name, AVStream *avstream,
+	      qap_module_flags_t qap_flags)
 {
 	struct stream *stream;
-	const char *name;
 	char channel_layout_desc[32];
 	qap_audio_format_t qap_format;
 	qap_module_config_t qap_mod_cfg;
 	AVCodecParameters *codecpar;
-
-	switch (qap_flags) {
-	case QAP_MODULE_FLAG_PRIMARY:
-		name = "PRIMARY";
-		break;
-	case QAP_MODULE_FLAG_SECONDARY:
-		name = "SECONDARY";
-		break;
-	case QAP_MODULE_FLAG_SYSTEM_SOUND:
-		name = "SYSTEM_SOUND";
-		break;
-	case QAP_MODULE_FLAG_APP_SOUND:
-		name = "APP_SOUND";
-		break;
-	case QAP_MODULE_FLAG_OTT_SOUND:
-		name = "OTT_SOUND";
-		break;
-	case QAP_MODULE_FLAG_EXTERN_PCM:
-		name = "EXTERN_PCM";
-		break;
-	default:
-		err("unknown qap module flags %x\n", qap_flags);
-		return NULL;
-	}
 
 	codecpar = avstream->codecpar;
 
@@ -1431,7 +1408,7 @@ ffmpeg_src_get_avstream(struct ffmpeg_src *src, int index)
 
 static int
 ffmpeg_src_map_stream(struct ffmpeg_src *src, int index,
-		      qap_module_flags_t qap_flags)
+		      const char *name, qap_module_flags_t qap_flags)
 {
 	AVStream *avstream;
 	struct stream *stream;
@@ -1447,7 +1424,7 @@ ffmpeg_src_map_stream(struct ffmpeg_src *src, int index,
 		return -1;
 	}
 
-	stream = stream_create(avstream, qap_flags);
+	stream = stream_create(name, avstream, qap_flags);
 	if (!stream)
 		return -1;
 
@@ -2100,6 +2077,9 @@ int main(int argc, char **argv)
 	if (optind < argc)
 		src_url[MODULE_PRIMARY] = argv[optind];
 
+	if (optind + 1 < argc)
+		src_url[MODULE_PRIMARY_2] = argv[optind + 1];
+
 	av_log_set_level(get_av_log_level());
 	avformat_network_init();
 	avdevice_register_all();
@@ -2202,7 +2182,7 @@ again:
 	if (src[MODULE_PRIMARY]) {
 		/* create primary QAP module */
 		ret = ffmpeg_src_map_stream(src[MODULE_PRIMARY],
-					    avstream->index,
+					    avstream->index, "MAIN",
 					    QAP_MODULE_FLAG_PRIMARY);
 		if (ret)
 			return 1;
@@ -2211,6 +2191,7 @@ again:
 		if (secondary_stream_index != -1) {
 			ret = ffmpeg_src_map_stream(src[MODULE_PRIMARY],
 						    secondary_stream_index,
+						    "ASSOC",
 						    QAP_MODULE_FLAG_SECONDARY);
 			if (ret)
 				return 1;
@@ -2218,9 +2199,17 @@ again:
 	}
 
 	if (src[MODULE_SECONDARY]) {
-		/* create assoc/main2 QAP module */
+		/* create assoc QAP module */
 		ret = ffmpeg_src_map_stream(src[MODULE_SECONDARY], -1,
-					    QAP_MODULE_FLAG_SECONDARY);
+					    "ASSOC", QAP_MODULE_FLAG_SECONDARY);
+		if (ret)
+			return 1;
+	}
+
+	if (src[MODULE_PRIMARY_2]) {
+		/* create main2 QAP module */
+		ret = ffmpeg_src_map_stream(src[MODULE_PRIMARY_2], -1,
+					    "MAIN2", QAP_MODULE_FLAG_PRIMARY);
 		if (ret)
 			return 1;
 	}
@@ -2228,6 +2217,7 @@ again:
 	/* create PCM QAP modules */
 	if (src[MODULE_SYSTEM_SOUND]) {
 		ret = ffmpeg_src_map_stream(src[MODULE_SYSTEM_SOUND], -1,
+					    "SYS_SOUND",
 					    QAP_MODULE_FLAG_SYSTEM_SOUND);
 		if (ret)
 			return 1;
@@ -2235,6 +2225,7 @@ again:
 
 	if (src[MODULE_APP_SOUND]) {
 		ret = ffmpeg_src_map_stream(src[MODULE_APP_SOUND], -1,
+					    "APP_SOUND",
 					    QAP_MODULE_FLAG_APP_SOUND);
 		if (ret)
 			return 1;
@@ -2242,6 +2233,7 @@ again:
 
 	if (src[MODULE_OTT_SOUND]) {
 		ret = ffmpeg_src_map_stream(src[MODULE_OTT_SOUND], -1,
+					    "OTT_SOUND",
 					    QAP_MODULE_FLAG_OTT_SOUND);
 		if (ret)
 			return 1;
@@ -2249,6 +2241,7 @@ again:
 
 	if (src[MODULE_EXTERN_PCM]) {
 		ret = ffmpeg_src_map_stream(src[MODULE_EXTERN_PCM], -1,
+					    "EXTERN_PCM",
 					    QAP_MODULE_FLAG_EXTERN_PCM);
 		if (ret)
 			return 1;
