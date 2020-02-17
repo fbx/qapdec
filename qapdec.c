@@ -208,6 +208,8 @@ packed_struct wav_header {
 	} data;
 };
 
+static void stop_all_inputs(void);
+
 static uint64_t
 get_time(void)
 {
@@ -704,6 +706,7 @@ static void handle_qap_session_event(qap_session_handle_t session, void *priv,
 		break;
 	case QAP_CALLBACK_EVENT_ERROR:
 		info("qap: error");
+		stop_all_inputs();
 		break;
 	case QAP_CALLBACK_EVENT_SUCCESS:
 		info("qap: success");
@@ -1586,6 +1589,28 @@ ffmpeg_src_thread_join(struct ffmpeg_src *src)
 }
 
 static void
+stop_all_inputs(void)
+{
+	pthread_mutex_lock(&qap_lock);
+	for (int i = 0; i < MAX_MODULES; i++) {
+		if (qap_inputs[i])
+			ffmpeg_src_thread_stop(qap_inputs[i]);
+	}
+	pthread_mutex_unlock(&qap_lock);
+}
+
+static void
+destroy_all_inputs(void)
+{
+	pthread_mutex_lock(&qap_lock);
+	for (int i = 0; i < MAX_MODULES; i++) {
+		ffmpeg_src_destroy(qap_inputs[i]);
+		qap_inputs[i] = NULL;
+	}
+	pthread_mutex_unlock(&qap_lock);
+}
+
+static void
 handle_log_msg(qap_log_level_t level, const char *msg)
 {
 	int dbg_level;
@@ -2266,10 +2291,7 @@ again:
 	}
 
 	/* cleanup */
-	for (int i = 0; i < MAX_MODULES; i++) {
-		ffmpeg_src_destroy(src[i]);
-		src[i] = NULL;
-	}
+	destroy_all_inputs();
 
 	if (qap_session_close(qap_session))
 		err("failed to close session");
