@@ -101,6 +101,7 @@ static struct qap_output_ctx {
 	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
 	uint64_t last_ts;
 	uint64_t total_bytes;
+	uint64_t total_frames;
 	uint64_t start_time;
 	FILE *stream;
 } qap_outputs[MAX_OUTPUTS];
@@ -418,6 +419,15 @@ static const char *audio_chmap_to_str(int channels, uint8_t *map)
 	return buf;
 }
 
+static struct qap_output_ctx *get_primary_output(void)
+{
+	for (int i = 0; i < MAX_OUTPUTS; i++) {
+		if (qap_outputs[i].enabled)
+			return &qap_outputs[i];
+	}
+	return NULL;
+}
+
 static struct qap_output_ctx *get_qap_output(int index)
 {
 	assert(index >= AUDIO_OUTPUT_ID_BASE &&
@@ -595,20 +605,35 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 	    output->config.sample_rate,
 	    buffer->common_params.timestamp - output->last_ts);
 
+	if (format_is_pcm(output->config.format)) {
+		output->total_frames += buffer->common_params.size /
+			(output->config.bit_width / 8 *
+			 output->config.channels);
+	} else {
+		output->total_frames++;
+	}
+
 	output->last_ts = buffer->common_params.timestamp;
 	output->total_bytes += buffer->common_params.size;
 	output_write_buffer(output, &buffer->common_params);
 
-	/* only wait on PCM outputs */
-	if (opt_render_realtime && format_is_pcm(output->config.format)) {
+	if (opt_render_realtime && output == get_primary_output()) {
 		uint64_t now, pts;
 		int64_t delay;
 
 		now = get_time() - output->start_time;
-		pts = output->total_bytes * 1000000 /
-			(output->config.bit_width / 8 *
-			 output->config.channels) /
-			output->config.sample_rate;
+		if (format_is_pcm(output->config.format)) {
+			pts = output->total_frames * 1000000 /
+				output->config.sample_rate;
+		} else if (output->config.format == QAP_AUDIO_FORMAT_AC3 ||
+			   output->config.format == QAP_AUDIO_FORMAT_EAC3) {
+			/* Dolby encoder always outputs 32ms frames */
+			pts = output->total_frames * 32000;
+		} else {
+			err("unsupported output format for realtime mode");
+			return;
+		}
+
 		delay = pts - now;
 
 		if (delay <= 0)
@@ -1262,22 +1287,6 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 			av_rescale_q(pts, av_timebase, qap_timebase);
 		qap_buffer.buffer_parms.input_buf_params.flags =
 			QAP_BUFFER_TSTAMP;
-	}
-
-	if (opt_render_realtime &&
-	    qap_buffer.buffer_parms.input_buf_params.flags == QAP_BUFFER_TSTAMP) {
-		uint64_t now;
-		int64_t delay;
-
-		/* throttle input in real time mode */
-		now = get_time() - stream->start_time;
-		delay = qap_buffer.common_params.timestamp - now - 10000;
-
-		if (delay > 0) {
-			dbg(" in: %s: wait %" PRIi64 "us",
-			    stream->name, delay);
-			usleep(delay);
-		}
 	}
 
 	dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
