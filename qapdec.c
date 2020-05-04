@@ -1197,11 +1197,16 @@ stream_create(const char *name, AVStream *avstream,
 		rate_idx = (config & 0x0780) >> 7;
 		channels_idx = (config & 0x0078) >> 3;
 
-		if (obj_type <= 3 && rate_idx == 15) {
+		if (obj_type == 0) {
+			err("invalid AOT 0");
+			goto fail;
+		}
+
+		if (obj_type <= 4 && rate_idx < 15) {
 			/* prepare ADTS header for MAIN, LC, SSR profiles */
 			stream->adts_header[0] = 0xff;
 			stream->adts_header[1] = 0xf9;
-			stream->adts_header[2] = obj_type << 6;
+			stream->adts_header[2] = (obj_type - 1) << 6;
 			stream->adts_header[2] |= rate_idx << 2;
 			stream->adts_header[2] |= (channels_idx & 4) >> 2;
 			stream->adts_header[3] = (channels_idx & 3) << 6;
