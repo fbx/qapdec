@@ -310,6 +310,35 @@ static const char *audio_format_to_str(qap_audio_format_t format)
 	return "unknown";
 }
 
+static const char *audio_profile_to_str(qap_audio_format_t format,
+					uint32_t profile)
+{
+	if (format == QAP_AUDIO_FORMAT_AAC ||
+	    format == QAP_AUDIO_FORMAT_AAC_ADTS) {
+		switch (profile) {
+		CASESTR(QAP_PROFILE_AAC_MAIN)
+		CASESTR(QAP_PROFILE_AAC_LOW_COMPLEXITY)
+		CASESTR(QAP_PROFILE_AAC_SSR)
+		}
+
+	} else if (format == QAP_AUDIO_FORMAT_DTS ||
+	    format == QAP_AUDIO_FORMAT_DTS_HD) {
+		switch (profile) {
+		CASESTR(QAP_PROFILE_DTS_LEGACY)
+		CASESTR(QAP_PROFILE_DTS_ES_MATRIX)
+		CASESTR(QAP_PROFILE_DTS_ES_DISCRETE)
+		CASESTR(QAP_PROFILE_DTS_9624)
+		CASESTR(QAP_PROFILE_DTS_ES_8CH_DISCRETE)
+		CASESTR(QAP_PROFILE_DTS_HIRES)
+		CASESTR(QAP_PROFILE_DTS_MA)
+		CASESTR(QAP_PROFILE_DTS_LBR)
+		CASESTR(QAP_PROFILE_DTS_LOSSLESS)
+		}
+	}
+
+	return "unknown";
+}
+
 static const char *audio_format_extension(qap_audio_format_t format)
 {
 	switch (format) {
@@ -756,8 +785,11 @@ static void handle_qap_session_event(qap_session_handle_t session, void *priv,
 
 static void handle_input_config(struct stream *stream, qap_input_config_t *cfg)
 {
-	info(" in: %s: format sr=%u ss=%u channels=%u",
-	     stream->name, cfg->sample_rate, cfg->bit_width, cfg->channels);
+	info(" in: %s: codec=%s profile=%s sr=%u ss=%u channels=%u ch_map[%s]",
+	     stream->name, audio_format_to_str(cfg->codec),
+	     audio_profile_to_str(cfg->codec, cfg->profile),
+	     cfg->sample_rate, cfg->bit_width, cfg->channels,
+	     audio_chmap_to_str(cfg->channels, cfg->ch_map));
 
 	stream->config = *cfg;
 }
