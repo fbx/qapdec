@@ -66,6 +66,7 @@ uint64_t clock_base_time;
 
 int debug_level = 1;
 bool opt_render_realtime;
+int64_t opt_discard_duration;
 char *opt_output_dir;
 volatile bool quit;
 volatile bool primary_done;
@@ -156,6 +157,7 @@ struct stream {
 struct ffmpeg_src {
 	AVFormatContext *avctx;
 	struct stream *streams[MAX_STREAMS];
+	int64_t seek_position;
 	int n_streams;
 	pthread_t tid;
 };
@@ -625,6 +627,7 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 {
 	int id = buffer->buffer_parms.output_buf_params.output_id;
 	struct qap_output_ctx *output = get_qap_output(id);
+	uint64_t pts;
 
 	dbg("out: %s: pcm buffer size=%u pts=%" PRIi64
 	    " duration=%" PRIi64 " last_diff=%" PRIi64,
@@ -645,25 +648,24 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 
 	output->last_ts = buffer->common_params.timestamp;
 	output->total_bytes += buffer->common_params.size;
-	output_write_buffer(output, &buffer->common_params);
+
+	if (format_is_pcm(output->config.format)) {
+		pts = output->total_frames * 1000000 /
+			output->config.sample_rate;
+	} else if (output->config.format == QAP_AUDIO_FORMAT_AC3 ||
+		   output->config.format == QAP_AUDIO_FORMAT_EAC3) {
+		/* Dolby encoder always outputs 32ms frames */
+		pts = output->total_frames * 32000;
+	} else {
+		err("unsupported output format");
+		return;
+	}
 
 	if (opt_render_realtime && output == get_primary_output()) {
-		uint64_t now, pts;
+		uint64_t now;
 		int64_t delay;
 
 		now = get_time() - output->start_time;
-		if (format_is_pcm(output->config.format)) {
-			pts = output->total_frames * 1000000 /
-				output->config.sample_rate;
-		} else if (output->config.format == QAP_AUDIO_FORMAT_AC3 ||
-			   output->config.format == QAP_AUDIO_FORMAT_EAC3) {
-			/* Dolby encoder always outputs 32ms frames */
-			pts = output->total_frames * 32000;
-		} else {
-			err("unsupported output format for realtime mode");
-			return;
-		}
-
 		delay = pts - now;
 
 		if (delay <= 0)
@@ -674,6 +676,14 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 
 		usleep(delay);
 	}
+
+	if (pts <= opt_discard_duration * 1000) {
+		dbg("out: %s: discard buffer at pos %" PRIu64 "ms",
+		    output->name, pts / 1000);
+		return;
+	}
+
+	output_write_buffer(output, &buffer->common_params);
 }
 
 static void handle_output_config(qap_output_buff_params_t *out_buffer)
@@ -1467,6 +1477,22 @@ ffmpeg_src_map_stream(struct ffmpeg_src *src, int index,
 
 	src->streams[src->n_streams++] = stream;
 
+	if (src->seek_position != 0) {
+		AVRational seek_time_base = { 1, 1000 };
+		int64_t position = av_rescale_q(src->seek_position,
+						seek_time_base,
+						avstream->time_base);
+
+		info(" in %s: seek to position %" PRId64, stream->name,
+		     src->seek_position);
+
+		if (av_seek_frame(src->avctx, avstream->index, position, 0) < 0) {
+			err(" in %s: failed to seek to position %" PRId64,
+			    stream->name, src->seek_position);
+			return -1;
+		}
+	}
+
 	return 0;
 }
 
@@ -1897,6 +1923,42 @@ static void *kbd_thread(void *userdata)
 	return NULL;
 }
 
+static bool
+parse_duration(const char *s, int64_t *duration_ms)
+{
+	char *end;
+	int64_t d;
+
+	if (!*s)
+		return false;
+
+	*duration_ms = 0;
+
+	while (*s) {
+		d = strtoll(s, &end, 10);
+		if (d == LLONG_MIN || d == LLONG_MAX)
+			return false;
+
+		if (s == end)
+			return false;
+
+		if (!strncmp(end, "ms", 2)) {
+			end += 2;
+		} else if (*end == 'm') {
+			d *= 60000LL;
+			end++;
+		} else if (*end == 's') {
+			d *= 1000LL;
+			end++;
+		}
+
+		*duration_ms += d;
+		s = end;
+	}
+
+	return true;
+}
+
 static void handle_quit(int sig)
 {
 	quit = true;
@@ -1928,6 +1990,8 @@ static void usage(void)
 		"  -k, --kvpairs=<kvpairs>      pass kvpairs string to the decoder backend\n"
 		"  -l, --loops=<count>          number of times the stream will be decoded\n"
 		"      --realtime               sync input feeding and output render to pts\n"
+		"      --seek=<pos>             seek inputs to specified position first\n"
+		"      --discard=<duration>     duration of output buffers to discard\n"
 		"      --sec-source=<url>       source for assoc/main2 module\n"
 		"      --sys-source=<url>       source for system sound module\n"
 		"      --app-source=<url>       source for app sound module\n"
@@ -1943,6 +2007,12 @@ static void usage(void)
 		"\n");
 }
 
+enum {
+	OPT_SEEK = 0x200,
+	OPT_DISCARD,
+};
+
+static int current_long_opt;
 static const struct option long_options[] = {
 	{ "help",              no_argument,       0, 'h' },
 	{ "verbose",           no_argument,       0, 'v' },
@@ -1956,6 +2026,8 @@ static const struct option long_options[] = {
 	{ "primary-stream",    required_argument, 0, 'p' },
 	{ "secondary-stream",  required_argument, 0, 's' },
 	{ "realtime",          no_argument,       0, '0' },
+	{ "seek",              required_argument, &current_long_opt, OPT_SEEK },
+	{ "discard",           required_argument, &current_long_opt, OPT_DISCARD },
 	{ "sec-source",        required_argument, 0, '1' },
 	{ "sys-source",        required_argument, 0, '2' },
 	{ "app-source",        required_argument, 0, '3' },
@@ -1985,6 +2057,7 @@ int main(int argc, char **argv)
 	uint64_t src_duration;
 	uint64_t start_time;
 	uint64_t end_time;
+	int64_t seek_position = 0;
 	bool kbd_enable = false;
 	pthread_t kbd_tid;
 	qap_session_t qap_session_type;
@@ -1995,6 +2068,9 @@ int main(int argc, char **argv)
 
 	while ((opt = getopt_long(argc, argv, "c:f:hik:l:o:p:s:t:v",
 				  long_options, NULL)) != -1) {
+		if (!opt)
+			opt = current_long_opt;
+
 		switch (opt) {
 		case 'c':
 			if (num_outputs >= ARRAY_SIZE(outputs)) {
@@ -2090,6 +2166,18 @@ int main(int argc, char **argv)
 		case 'h':
 			usage();
 			return 0;
+		case OPT_SEEK:
+			if (!parse_duration(optarg, &seek_position)) {
+				err("invalid seek position %s", optarg);
+				return 1;
+			}
+			break;
+		case OPT_DISCARD:
+			if (!parse_duration(optarg, &opt_discard_duration)) {
+				err("invalid discard duration %s", optarg);
+				return 1;
+			}
+			break;
 		default:
 			err("unknown option %c", opt);
 			usage();
@@ -2142,6 +2230,8 @@ again:
 		src[i] = ffmpeg_src_create(src_url[i], src_format[i]);
 		if (!src[i])
 			return 1;
+
+		src[i]->seek_position = seek_position;
 	}
 
 	if (src[MODULE_PRIMARY]) {
