@@ -1158,6 +1158,11 @@ stream_create(const char *name, AVStream *avstream,
 	qap_mod_cfg.flags = qap_flags;
 	qap_mod_cfg.format = qap_format;
 
+	/* XXX: this needs to be set, otherwise number of decoded frames is not
+	 * reported correctly by the MS12_STREAM_GET_DECODER_OUTPUT_FRAME
+	 * command */
+	qap_mod_cfg.sample_rate = 48000;
+
 	av_get_channel_layout_string(channel_layout_desc,
 				     sizeof (channel_layout_desc),
 				     codecpar->channels,
