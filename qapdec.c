@@ -60,6 +60,7 @@
 #define ADTS_HEADER_SIZE 7
 
 qap_lib_handle_t qap_lib;
+qap_session_t qap_session_type;
 qap_session_handle_t qap_session;
 unsigned int qap_outputs_configure_count;
 uint64_t clock_base_time;
@@ -1298,7 +1299,9 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 
 	memset(&qap_buffer, 0, sizeof (qap_buffer));
 
-	if (pts == AV_NOPTS_VALUE) {
+	/* XXX: don't use timestamps in OTT mode, otherwise dual decode and
+	 * pause commands do not work correctly */
+	if (pts == AV_NOPTS_VALUE || qap_session_type == QAP_SESSION_MS12_OTT) {
 		qap_buffer.common_params.timestamp = 0;
 		qap_buffer.buffer_parms.input_buf_params.flags =
 			QAP_BUFFER_NO_TSTAMP;
@@ -2060,7 +2063,6 @@ int main(int argc, char **argv)
 	int64_t seek_position = 0;
 	bool kbd_enable = false;
 	pthread_t kbd_tid;
-	qap_session_t qap_session_type;
 	AVStream *avstream;
 
 	clock_base_time = get_time();
