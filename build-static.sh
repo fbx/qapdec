@@ -53,7 +53,7 @@ p "FFMPEG"
 
 cd "$D"
 
-pkg="ffmpeg-4.1"
+pkg="ffmpeg-4.2.2"
 archive="$pkg.tar.bz2"
 S="$D/src/$pkg"
 
@@ -84,38 +84,25 @@ if [ ! -e Makefile ]; then
         --disable-podpages \
         --disable-txtpages \
         --disable-debug \
-        --disable-hwaccels \
-        --disable-outdevs \
-        --disable-iconv \
-        --disable-zlib \
-        --disable-bzlib \
-        --disable-xlib \
-        --disable-alsa \
-        --disable-sdl2 \
-        --enable-nonfree \
+        --disable-nonfree \
         --disable-gpl \
+        --disable-iconv \
+        --disable-autodetect \
+        --disable-programs \
         --disable-swscale \
         --disable-swresample \
         --enable-avdevice \
         --enable-avfilter \
         --enable-small \
-        --disable-ffmpeg \
-        --disable-ffplay \
-        --disable-ffprobe \
-        --disable-indevs \
+        --disable-everything \
         --enable-indev=lavfi \
-        --disable-encoders \
-        --disable-decoders \
         --enable-decoder=aac \
         --enable-decoder=ac3 \
         --enable-decoder=eac3 \
         --enable-decoder=dca \
-        --disable-filters \
         --enable-filter=sine \
-        --disable-muxers \
         --enable-muxer=adts \
         --enable-muxer=latm \
-        --disable-demuxers \
         --enable-demuxer=aac \
         --enable-demuxer=ac3 \
         --enable-demuxer=eac3 \
@@ -129,14 +116,11 @@ if [ ! -e Makefile ]; then
         --enable-demuxer=mpegts \
         --enable-demuxer=wav \
         --enable-demuxer=hls \
-        --disable-bsfs \
         --enable-bsf=dca_core \
-        --disable-parsers \
         --enable-parser=aac \
         --enable-parser=ac3 \
         --enable-parser=dca \
         --enable-network \
-        --disable-protocols \
         --enable-protocol=file \
         --enable-protocol=hls \
         --enable-protocol=http
