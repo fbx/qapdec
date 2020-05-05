@@ -97,6 +97,7 @@ if [ ! -e Makefile ]; then
         --disable-everything \
         --enable-indev=lavfi \
         --enable-decoder=aac \
+        --enable-decoder=aac_latm \
         --enable-decoder=ac3 \
         --enable-decoder=eac3 \
         --enable-decoder=dca \
@@ -118,6 +119,7 @@ if [ ! -e Makefile ]; then
         --enable-demuxer=hls \
         --enable-bsf=dca_core \
         --enable-parser=aac \
+        --enable-parser=aac_latm \
         --enable-parser=ac3 \
         --enable-parser=dca \
         --enable-network \
