@@ -499,18 +499,25 @@ static struct {
 static int output_write_header(struct qap_output_ctx *out)
 {
 	qap_output_config_t *cfg = &out->config;
-	char filename[PATH_MAX];
 	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
 	int wav_channel_count = 0;
+	bool output_is_stdout;
 	struct wav_header hdr;
 	uint32_t channel_mask = 0;
 
 	if (!opt_output_dir)
 		return 0;
 
+	output_is_stdout = !strcmp(opt_output_dir, "-");
+
 	if (out->discont) {
-		if (out->stream)
+		if (out->stream) {
+			if (output_is_stdout) {
+				err("cannot reconfigure output when writing to stdout");
+				return -1;
+			}
 			fclose(out->stream);
+		}
 		out->stream = NULL;
 		out->discont = false;
 	}
@@ -518,15 +525,21 @@ static int output_write_header(struct qap_output_ctx *out)
 	if (out->stream)
 		return 0;
 
-	snprintf(filename, sizeof (filename),
-		 "%s/%03u.%s.%s", opt_output_dir,
-		 qap_outputs_configure_count, out->name,
-		 audio_format_extension(out->config.format));
+	if (output_is_stdout) {
+		out->stream = stdout;
+	} else {
+		char filename[PATH_MAX];
 
-	out->stream = fopen(filename, "w");
-	if (!out->stream) {
-		err("failed to create output file %s: %m", filename);
-		return -1;
+		snprintf(filename, sizeof (filename),
+			 "%s/%03u.%s.%s", opt_output_dir,
+			 qap_outputs_configure_count, out->name,
+			 audio_format_extension(out->config.format));
+
+		out->stream = fopen(filename, "w");
+		if (!out->stream) {
+			err("failed to create output file %s: %m", filename);
+			return -1;
+		}
 	}
 
 	if (!format_is_pcm(out->config.format)) {
@@ -1994,6 +2007,7 @@ static void usage(void)
 		"  -s, --secondary-stream=<n>   audio secondary stream number to decode\n"
 		"  -t, --session-type=<type>    session type (broadcast, decode, encode, ott)\n"
 		"  -o, --output-dir=<path>      output data to files in the specified dir path\n"
+		"                                use '-' as argument to output to stdout instead\n"
 		"  -c, --channels=<channels>    maximum number of channels to output\n"
 		"  -k, --kvpairs=<kvpairs>      pass kvpairs string to the decoder backend\n"
 		"  -l, --loops=<count>          number of times the stream will be decoded\n"
@@ -2198,13 +2212,21 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (opt_output_dir && mkdir_p(opt_output_dir, 0777)) {
-		err("failed to create output directory %s: %m", opt_output_dir);
-		return 1;
-	}
-
 	if (num_outputs == 0)
 		outputs[num_outputs++] = OUTPUT_5DOT1;
+
+	if (opt_output_dir) {
+		if (!strcmp(opt_output_dir, "-")) {
+			if (num_outputs != 1) {
+				err("writing to stdout requires exactly one output");
+				return 1;
+			}
+		} else if (mkdir_p(opt_output_dir, 0777)) {
+			err("failed to create output directory %s: %m",
+			    opt_output_dir);
+			return 1;
+		}
+	}
 
 	if (optind < argc)
 		src_url[MODULE_PRIMARY] = argv[optind];
