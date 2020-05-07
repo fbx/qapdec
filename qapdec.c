@@ -1554,8 +1554,13 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 	}
 
 	pthread_mutex_lock(&stream->lock);
-	while (stream->blocked && !stream->terminated)
-		pthread_cond_wait(&stream->cond, &stream->lock);
+	if (stream->blocked) {
+		info(" in: %s: blocked", stream->name);
+		while (stream->blocked && !stream->terminated) {
+			pthread_cond_wait(&stream->cond, &stream->lock);
+		}
+		info(" in: %s: unblocked", stream->name);
+	}
 	pthread_mutex_unlock(&stream->lock);
 
 	if (stream->insert_adts_header) {
