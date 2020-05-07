@@ -857,8 +857,6 @@ static void handle_qap_module_event(qap_module_handle_t module, void *priv,
 
 static void wait_buffer_available(struct stream *stream)
 {
-	dbg(" in: %s: wait buffer", stream->name);
-
 	pthread_mutex_lock(&stream->lock);
 	while (!stream->terminated && stream->buffer_full) {
 		struct timespec delay;
@@ -1357,8 +1355,7 @@ stream_write(struct stream *stream, void *data, int size, int64_t pts)
 
 		ret = qap_module_process(stream->module, &qap_buffer);
 		if (ret == -EAGAIN) {
-			dbg(" in: %s: full, %" PRIu64 " bytes written",
-			    stream->name, stream->written_bytes);
+			dbg(" in: %s: wait, buffer is full", stream->name);
 			wait_buffer_available(stream);
 		} else if (ret < 0) {
 			err("%s: qap_module_process error %d", stream->name, ret);
