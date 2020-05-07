@@ -682,13 +682,14 @@ static void handle_buffer(qap_audio_buffer_t *buffer)
 		now = get_time() - output->start_time;
 		delay = pts - now;
 
-		if (delay <= 0)
-			return;
-
-		dbg("out: %s: wait %" PRIi64 "us for sync",
-		    output->name, delay);
-
-		usleep(delay);
+		if (delay <= 0) {
+			dbg("out: %s: buffer late by %" PRIi64 "us",
+			    output->name, -delay);
+		} else {
+			dbg("out: %s: wait %" PRIi64 "us for sync",
+			    output->name, delay);
+			usleep(delay);
+		}
 	}
 
 	if (pts <= opt_discard_duration * 1000) {
