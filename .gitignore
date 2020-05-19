@@ -1,4 +1,5 @@
 *.o
+*.a
 .*.o.d
 /qapdec
 /version.h
