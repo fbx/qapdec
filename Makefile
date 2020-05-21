@@ -50,6 +50,29 @@ targets += qapdec
 make_deps += $(patsubst %,.%.d,$(qapdec_objs))
 
 #
+# qaptest
+#
+
+qaptest_pkgs = fftw3
+qaptest_pkg_cflags = $(shell $(PKG_CONFIG) --cflags $(qaptest_pkgs))
+qaptest_pkg_libs = $(shell $(PKG_CONFIG) --libs $(qaptest_pkgs))
+
+qaptest_objs = qaptest.o munit/munit.o
+qaptest_cppflags = -D_DEFAULT_SOURCE $(CPPFLAGS)
+qaptest_cflags = -std=gnu11 -Wall -pthread $(qd_includes) $(qaptest_pkg_cflags) $(CFLAGS)
+qaptest_ldflags = $(LDFLAGS) -pthread
+qaptest_ldlibs = -lm $(qd_ldlibs) $(qaptest_pkg_libs)
+
+$(qaptest_objs): %.o: %.c
+	$(CC) -c $(qaptest_cflags) -o $@ -MD -MP -MF $(@D)/.$(@F).d $(qaptest_cppflags) $<
+
+qaptest: $(qaptest_objs) libqd.a
+	$(CC) $(qaptest_ldflags) $+ -o $@ $(qaptest_ldlibs)
+
+targets += qaptest
+make_deps += $(patsubst %,.%.d,$(qaptest_objs))
+
+#
 # common rules
 #
 

@@ -2,6 +2,7 @@
 *.a
 .*.o.d
 /qapdec
+/qaptest
 /version.h
 /.git-version
 /.git-commitdate
