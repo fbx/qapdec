@@ -3,7 +3,7 @@
 SCRIPT_DIR=$(cd `dirname $0` && echo $PWD)
 
 CC="${CROSS}gcc"
-CFLAGS="-g -O2"
+CFLAGS="-O2"
 
 TRIPLE=$(${CROSS}gcc -dumpmachine)
 ARCH=$(echo $TRIPLE | cut -d- -f1)
@@ -48,6 +48,56 @@ CFLAGS="$CFLAGS -isystem $D/staging/usr/include"
 export PATH="$D/host/bin:$PATH"
 export PKG_CONFIG_SYSROOT="$SYSROOT"
 export PKG_CONFIG_LIBDIR="$D/staging/usr/lib/pkgconfig:$D/staging/usr/share/pkgconfig:$SYSROOT/usr/lib64/pkgconfig"
+
+p "FFTW3"
+
+cd "$D"
+
+pkg="fftw-3.3.8"
+archive="$pkg.tar.gz"
+S="$D/src/$pkg"
+
+if [ ! -d "$S" ]; then
+    p2 "download $pkg"
+    wget -c -nv -P dl "http://fftw.org/$archive"
+    tar xf "dl/$archive" -C src
+fi
+
+if [ ! -e "$S/configure" ]; then
+    p2 "autoconf $pkg"
+    (cd "$S" && autoreconf -fi)
+fi
+
+mkdir -p build/target/fftw
+cd build/target/fftw
+
+if [ ! -e Makefile ]; then
+    p2 "configure $pkg"
+    "$S/configure" --silent --prefix="$D/staging/usr" \
+        --host="$TRIPLE" \
+        --target="$TRIPLE" \
+        --enable-silent-rules \
+        --disable-shared \
+        --enable-static \
+        --disable-debug \
+        --disable-doc \
+        --enable-neon \
+        --disable-fortran \
+        --disable-openmp \
+        --disable-threads \
+        CC="$CC" CFLAGS="$CFLAGS" \
+        PKG_CONFIG_LIBDIR="$D/staging/usr/lib/pkgconfig"
+fi
+
+p2 "build $pkg"
+
+touch .stamp-build
+make -s -j"$MAKE_JOBS"
+
+if [ -n "`find -H -type f -newer .stamp-build`" ]; then
+    p2 "install $pkg"
+    make -s install >/dev/null
+fi
 
 p "FFMPEG"
 

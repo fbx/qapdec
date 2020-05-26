@@ -14,8 +14,8 @@ all:
 #
 
 qd_pkgs = qap_wrapper libavformat libavcodec libavdevice libavutil
-qd_includes = $(shell $(PKG_CONFIG) --cflags $(qd_pkgs))
-qd_ldlibs = $(shell $(PKG_CONFIG) --libs $(qd_pkgs))
+qd_includes = $(shell $(PKG_CONFIG) --static --cflags $(qd_pkgs))
+qd_ldlibs = $(shell $(PKG_CONFIG) --static --libs $(qd_pkgs))
 
 qd_objs = qd.o
 qd_cppflags = -D_DEFAULT_SOURCE $(CPPFLAGS)
@@ -54,8 +54,8 @@ make_deps += $(patsubst %,.%.d,$(qapdec_objs))
 #
 
 qaptest_pkgs = fftw3
-qaptest_pkg_cflags = $(shell $(PKG_CONFIG) --cflags $(qaptest_pkgs))
-qaptest_pkg_libs = $(shell $(PKG_CONFIG) --libs $(qaptest_pkgs))
+qaptest_pkg_cflags = $(shell $(PKG_CONFIG) --static --cflags $(qaptest_pkgs))
+qaptest_pkg_libs = $(shell $(PKG_CONFIG) --static --libs $(qaptest_pkgs))
 
 qaptest_objs = qaptest.o munit/munit.o
 qaptest_cppflags = -D_DEFAULT_SOURCE $(CPPFLAGS)
