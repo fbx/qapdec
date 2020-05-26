@@ -817,8 +817,8 @@ static void
 handle_input_config(struct qd_input *input, qap_input_config_t *cfg)
 {
 	info(" in: %s: codec=%s profile=%s sr=%u ss=%u channels=%u ch_map[%s]",
-	     input->name, audio_format_to_str(cfg->codec),
-	     audio_profile_to_str(cfg->codec, cfg->profile),
+	     input->name, audio_format_to_str(cfg->format),
+	     audio_profile_to_str(cfg->format, cfg->profile),
 	     cfg->sample_rate, cfg->bit_width, cfg->channels,
 	     audio_chmap_to_str(cfg->channels, cfg->ch_map));
 
@@ -1056,7 +1056,7 @@ qd_input_set_buffer_size(struct qd_input *input, uint32_t buffer_size)
 }
 
 uint64_t
-qd_input_get_decoded_frames(struct qd_input *input)
+qd_input_get_output_frames(struct qd_input *input)
 {
 	uint32_t param_id = MS12_STREAM_GET_DECODER_OUTPUT_FRAME;
 	uint64_t frames = 0;
@@ -1067,7 +1067,7 @@ qd_input_get_decoded_frames(struct qd_input *input)
 			     sizeof (param_id), &param_id,
 			     &reply_size, &frames);
 	if (ret < 0) {
-		err("%s: failed to get decoded frames", input->name);
+		err("%s: failed to get output frames", input->name);
 		return 0;
 	}
 
@@ -1077,24 +1077,24 @@ qd_input_get_decoded_frames(struct qd_input *input)
 }
 
 int
-qd_input_get_input_markers(struct qd_input *input, qap_marker *marker)
+qd_input_get_io_info(struct qd_input *input, qap_report_frames_t *report)
 {
-	uint32_t param_id = MS12_STREAM_GET_CONSUMED_FRAMES;
-	uint32_t reply_size = sizeof (*marker);
+	uint32_t param_id = MS12_STREAM_GET_DECODER_IO_FRAMES_INFO;
+	uint32_t reply_size = sizeof (*report);
 	int ret;
 
-	if (!marker)
+	if (!report)
 		return -1;
 
 	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_GET_PARAM,
 			     sizeof (param_id), &param_id,
-			     &reply_size, marker);
+			     &reply_size, report);
 	if (ret < 0) {
-		err("%s: failed to get consumed frames", input->name);
+		err("%s: failed to get decoder io info", input->name);
 		return -1;
 	}
 
-	assert(reply_size == sizeof (*marker));
+	assert(reply_size == sizeof (*report));
 
 	return 0;
 }
@@ -1363,7 +1363,7 @@ int
 qd_input_write(struct qd_input *input, void *data, int size, int64_t pts)
 {
 	qap_audio_buffer_t qap_buffer;
-	qap_marker marker;
+	qap_report_frames_t report_frames;
 	int offset = 0;
 	int ret;
 
@@ -1437,15 +1437,13 @@ qd_input_write(struct qd_input *input, void *data, int size, int64_t pts)
 	if (input->terminated)
 		return -1;
 
-	if (input->id == QD_INPUT_MAIN ||
-	    input->id == QD_INPUT_MAIN2) {
-		dbg(" in: %s: generated %" PRIu64 " frames", input->name,
-		    qd_input_get_decoded_frames(input));
-	}
+	dbg(" in: %s: generated %" PRIu64 " frames", input->name,
+	    qd_input_get_output_frames(input));
 
-	if (!qd_input_get_input_markers(input, &marker)) {
-		dbg(" in: %s: input marker from=%llu to=%llu", input->name,
-		    marker.from_marker, marker.to_marker);
+	if (!qd_input_get_io_info(input, &report_frames)) {
+		dbg(" in: %s: consumed=%" PRIu64 " decoded=%" PRIu64,
+		    input->name, report_frames.consumed_frames,
+		    report_frames.decoded_frames);
 	}
 
 	return size;

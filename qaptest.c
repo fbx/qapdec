@@ -385,7 +385,7 @@ input_event_cb_record(struct qd_input *input, enum qd_input_event ev,
 
 	/* check the input config matches the file description */
 	i = ctx->n_configs++;
-	assert_int(input->config.codec, ==, ctx->f->format);
+	assert_int(input->config.format, ==, ctx->f->format);
 	assert_int(input->config.profile, ==, ctx->f->profile);
 	assert_int(input->config.channels, ==, ctx->f->configs[i].channels);
 	assert_memory_equal(sizeof (input->config.ch_map),
