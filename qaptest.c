@@ -44,8 +44,8 @@ static inline bool
 int16_is_silence(int16_t *samples, size_t count)
 {
 	for (size_t i = 0; i < count; i++) {
-		if (samples[i] < INT16_MIN * 0.0001 ||
-		    samples[i] > INT16_MAX * 0.0001)
+		if (samples[i] < INT16_MIN * 0.0005 ||
+		    samples[i] > INT16_MAX * 0.0005)
 			return false;
 	}
 	return true;
@@ -605,6 +605,159 @@ static MunitParameterEnum parms_ms12_assoc_mix[] = {
 	{ "xu", parm_ms12_xu_assoc_mix },
 	{ NULL, NULL },
 };
+
+/*
+ * MS12: test Main+Assoc mixing with a gap in the assoc stream
+ *
+ * Verify there is no more than 1s of silence in the output stream when the
+ * assoc stream is feeding data anymore. Main input must continue to be decoded
+ * in this case.
+ */
+
+struct assoc_disappearing_output {
+	int l_silent_frame_count;
+	int r_silent_frame_count;
+	bool seen_l_silence;
+	bool seen_r_silence;
+};
+
+struct assoc_disappearing_ctx {
+	struct assoc_disappearing_output outputs[QD_MAX_OUTPUTS];
+};
+
+static void
+assoc_disappearing_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
+		    void *userdata)
+{
+	struct assoc_disappearing_ctx *ctx = userdata;
+	struct assoc_disappearing_output *out = &ctx->outputs[output->id];
+	size_t frame_size;
+
+	/* check output config */
+	assert_int(output->config.sample_rate, ==, 48000);
+	assert_int(output->config.bit_width, ==, 16);
+	assert_int(output->config.channels, >=, 2);
+
+	frame_size = output->config.channels * output->config.bit_width / 8;
+	assert_int(buffer->common_params.size % frame_size, ==, 0);
+
+	/* discard early audio, AAC and DDP outputs are not identical */
+	if (output->pts < 2.5 * QD_SECOND)
+		return;
+
+	for (size_t i = 0; i < buffer->common_params.size; i += frame_size) {
+		int16_t *frame = buffer->common_params.data + i;
+
+		/* record number of contiguous silent samples for left and
+		 * right channels */
+		if (int16_is_silence(frame + 0, 1))
+			out->l_silent_frame_count++;
+		else
+			out->l_silent_frame_count = 0;
+
+		if (int16_is_silence(frame + 1, 1))
+			out->r_silent_frame_count++;
+		else
+			out->r_silent_frame_count = 0;
+
+		if (output->pts < 10 * QD_SECOND ||
+		    output->pts > 21 * QD_SECOND) {
+			/* silence is not allowed in L/R when Assoc is fed */
+			assert_int(out->l_silent_frame_count, <, 48);
+
+			/* ignore aac cert file error at ~24s */
+			if (output->pts < 24 * QD_SECOND &&
+			    output->pts > 25 * QD_SECOND)
+				assert_int(out->r_silent_frame_count, <, 48);
+		} else {
+			/* check that we are still seeing main audio when Assoc
+			 * is not fed */
+			assert_int(out->l_silent_frame_count, <, 3 * 48000);
+			assert_int(out->r_silent_frame_count, <, 3 * 48000);
+		}
+
+		/* record if we've seen at least 2s of silence */
+		if (out->l_silent_frame_count > 2 * 48000)
+			out->seen_l_silence = true;
+		if (out->r_silent_frame_count > 2 * 48000)
+			out->seen_r_silence = true;
+
+		/* verify other channels are silent */
+		assert_true(int16_is_silence(frame + 2,
+					     output->config.channels - 2));
+	}
+}
+
+static const struct file_alias assoc_disappearing_files[] = {
+	{ "ddp", "Transport_Streams/DVB_h264_25fps/DisappearingAA/DD_Disappearing-AA_ddp_DVB_h264_25fps.trp" },
+	{ "aac", "Transport_Streams/DVB_h264_25fps/DisappearingAA/DD_Disappearing-AA_heaac_DVB_h264_25fps.trp" },
+	{ NULL, NULL }
+};
+
+static MunitResult
+test_ms12_assoc_disappearing(const MunitParameter params[],
+			     void *user_data_or_fixture)
+{
+	struct qd_session *session;
+	struct qd_input *input_main, *input_assoc;
+	struct ffmpeg_src *src;
+	const char *v, *f;
+	struct assoc_disappearing_ctx ctx = {};
+
+	if (!(session = setup_ms12_session(params)))
+		return MUNIT_SKIP;
+
+	qd_session_set_output_cb(session, assoc_disappearing_output_cb, &ctx);
+
+	/* respect input timestamps so that Main and Assoc are synchronized,
+	 * even in OTT mode */
+	qd_session_ignore_timestamps(session, false);
+
+	/* create source from TS file */
+	v = munit_parameters_get(params, "f");
+	if (!(f = find_filename(assoc_disappearing_files, v)))
+		return MUNIT_ERROR;
+
+	assert_not_null((src = ffmpeg_src_create(f, NULL)));
+
+	/* create main input from main stream */
+	assert_not_null((input_main = ffmpeg_src_add_input(src, 1, session,
+							   QD_INPUT_MAIN)));
+
+	/* create assoc input from second stream */
+	assert_not_null((input_assoc = ffmpeg_src_add_input(src, 2, session,
+							    QD_INPUT_ASSOC)));
+
+	/* play */
+	assert_int(0, ==, ffmpeg_src_thread_start(src));
+	assert_int(0, ==, ffmpeg_src_thread_join(src));
+
+	/* verify we've seen at least 2s of silence in left and right channels,
+	 * which is expected while Assoc has "disappeared" */
+	for (int i = 0; i < QD_MAX_OUTPUTS; i++) {
+		if (session->outputs[i].enabled) {
+			assert_true(ctx.outputs[i].seen_l_silence);
+			assert_true(ctx.outputs[i].seen_r_silence);
+		}
+	}
+
+	ffmpeg_src_destroy(src);
+	qd_session_destroy(session);
+
+	return MUNIT_OK;
+}
+
+static char *parm_ms12_files_assoc_disappearing[] = {
+	"ddp", "aac", NULL
+};
+
+static MunitParameterEnum parms_ms12_assoc_disappearing[] = {
+	{ "t", parm_ms12_sessions_all },
+	{ "o", parm_ms12_outputs_pcm_all },
+	{ "f", parm_ms12_files_assoc_disappearing },
+	{ NULL, NULL },
+};
+
 
 /*
  * MS12: test Main+Main2 mixing
@@ -1293,6 +1446,10 @@ static MunitTest ms12_tests[] = {
 	  test_ms12_assoc_mix,
 	  pretest_ms12, NULL,
 	  MUNIT_TEST_OPTION_NONE, parms_ms12_assoc_mix },
+	{ "/ms12/assoc_disappearing",
+	  test_ms12_assoc_disappearing,
+	  pretest_ms12, NULL,
+	  MUNIT_TEST_OPTION_NONE, parms_ms12_assoc_disappearing },
 	{ "/ms12/main2_mix",
 	  test_ms12_main2_mix,
 	  pretest_ms12, NULL,
