@@ -771,6 +771,11 @@ drc_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
 	frame_size = output->config.channels * output->config.bit_width / 8;
 	assert_int(buffer->common_params.size % frame_size, ==, 0);
 
+	/* skip data other than the 440Hz tone */
+	if (output->pts <= 14 * QD_SECOND ||
+	    output->pts >= 70 * QD_SECOND)
+		return;
+
 	/* feed left and right channel data */
 	for (size_t i = 0; i < buffer->common_params.size; i += frame_size) {
 		int16_t *frame = buffer->common_params.data + i;
@@ -800,15 +805,15 @@ drc_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
 
 		/* check gain matches reference curve */
 		t = output->pts / (double)QD_SECOND;
-		if (t <= 16) {
-			assert_double(gain, >=, -52.5 + t / 2.0);
-			assert_double(gain, <=, -49.5 + t / 2.0);
-		} else if (t <= 36) {
-			assert_double(gain, >=, -44.5 + (t - 16));
-			assert_double(gain, <=, -41.5 + (t - 16));
-		} else if (output->pts <= 60 * QD_SECOND) {
-			assert_double(gain, >=, -24.5 + (t - 36) / 2.0);
-			assert_double(gain, <=, -21.5 + (t - 36) / 2.0);
+		if (t <= 26) {
+			assert_double(gain, >=, -52.5 + (t - 10) / 2.0);
+			assert_double(gain, <=, -50.5 + (t - 10) / 2.0);
+		} else if (t <= 46) {
+			assert_double(gain, >=, -44.5 + (t - 26));
+			assert_double(gain, <=, -42.5 + (t - 26));
+		} else {
+			assert_double(gain, >=, -24.5 + (t - 46) / 2.0);
+			assert_double(gain, <=, -22.5 + (t - 46) / 2.0);
 		}
 
 		/* reset window */
@@ -855,13 +860,6 @@ test_ms12_drc(const MunitParameter params[], void *user_data_or_fixture)
 	assert_not_null((src = ffmpeg_src_create(f, NULL)));
 	assert_not_null((input = ffmpeg_src_add_input(src, 0, session,
 						      QD_INPUT_MAIN)));
-
-	/* skip silence and ref tone at beginning of input files */
-	assert_int(0, ==, ffmpeg_src_seek(src, 10000));
-
-	/* discard first 4s of audio to simplify verification,
-	 * as RF mode start curve is not really linear */
-	qd_session_set_output_discard_ms(session, 4000);
 
 	/* play */
 	assert_int(0, ==, ffmpeg_src_thread_start(src));
