@@ -1434,6 +1434,175 @@ static MunitParameterEnum parms_ms12_pause[] = {
 };
 
 /*
+ * MS12: test reconfiguration of active outputs at runtime
+ *
+ * Input files will render a stereo 997Hz tone at -20dBFS.
+ *
+ * Verify the left and right channels are rendered properly at all times,
+ * checking the peak frequency and gain are correct. Output reconfiguration
+ * must not trigger any glitch. Unfortunately this does not check if any audio
+ * is skipped.
+ */
+
+struct output_reconfig_out {
+	struct peak_analyzer pa[2];
+};
+
+struct output_reconfig_ctx {
+	struct output_reconfig_out outputs[QD_MAX_OUTPUTS];
+};
+
+static void
+output_reconfig_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
+			  void *userdata)
+{
+	struct output_reconfig_ctx *ctx = userdata;
+	struct output_reconfig_out *out = &ctx->outputs[output->id];
+	size_t frame_size;
+
+	/* check output config */
+	assert_int(output->config.sample_rate, ==, 48000);
+	assert_int(output->config.bit_width, ==, 16);
+	assert_int(output->config.channels, >=, 2);
+
+	frame_size = output->config.channels * output->config.bit_width / 8;
+	assert_int(buffer->common_params.size % frame_size, ==, 0);
+
+	/* discard early audio */
+	if (output->pts < 500 * QD_MSECOND)
+		return;
+
+	for (size_t i = 0; i < buffer->common_params.size; i += frame_size) {
+		int16_t *frame = buffer->common_params.data + i;
+
+		/* feed left and right channel data */
+		peak_analyzer_add_samples(&out->pa[0], frame + 0, 1);
+		peak_analyzer_add_samples(&out->pa[1], frame + 1, 1);
+
+		/* verify the rest is silence */
+		assert_true(int16_is_silence(frame + 2,
+					     output->config.channels - 2));
+	}
+
+	for (int i = 0; i < 2; i++) {
+		double freq, gain;
+
+		/* fill window before running fft and analyzing data */
+		if (out->pa[i].n_samples != out->pa[i].max_samples)
+			continue;
+
+		assert_true(peak_analyzer_run(&out->pa[i], &freq, &gain));
+
+		/* check peak frequency and gain*/
+		assert_int(freq, >=, 994);
+		assert_int(freq, <=, 1000);
+		assert_int(gain, >=, -23);
+		assert_int(gain, <=, -17);
+
+		/* reset window */
+		out->pa[i].n_samples = 0;
+	}
+}
+
+
+enum qd_output_id output_reconfig_sequence[][2] = {
+       { QD_OUTPUT_STEREO, QD_OUTPUT_NONE },
+       { QD_OUTPUT_7DOT1,  QD_OUTPUT_NONE },
+       { QD_OUTPUT_STEREO, QD_OUTPUT_NONE },
+       { QD_OUTPUT_5DOT1,  QD_OUTPUT_NONE },
+       { QD_OUTPUT_STEREO, QD_OUTPUT_NONE },
+       { QD_OUTPUT_5DOT1,  QD_OUTPUT_NONE },
+       { QD_OUTPUT_7DOT1,  QD_OUTPUT_NONE },
+       { QD_OUTPUT_5DOT1,  QD_OUTPUT_NONE },
+       { QD_OUTPUT_7DOT1,  QD_OUTPUT_NONE },
+       { QD_OUTPUT_STEREO, QD_OUTPUT_5DOT1 },
+       { QD_OUTPUT_STEREO, QD_OUTPUT_7DOT1 },
+       { QD_OUTPUT_STEREO, QD_OUTPUT_5DOT1 },
+       { QD_OUTPUT_STEREO, QD_OUTPUT_7DOT1 },
+       { QD_OUTPUT_STEREO, QD_OUTPUT_NONE },
+};
+
+static const struct file_alias output_reconfig_files[] = {
+	{ "ddp", "Elementary_Streams/Reference_Level/Ref_997_200_48k_20dB_ddp.ec3" },
+	{ "aac_adts", "Elementary_Streams/Reference_Level/Ref_997_200_48k_20dB_heaac.adts" },
+	{ "aac_loas", "Elementary_Streams/Reference_Level/Ref_997_200_48k_20dB_heaac.loas" },
+	{ NULL, NULL }
+};
+
+static MunitResult
+test_ms12_output_reconfig(const MunitParameter params[], void *user_data_or_fixture)
+{
+	struct qd_session *session;
+	struct qd_input *input;
+	struct ffmpeg_src *src;
+	const char *v, *f;
+	struct output_reconfig_ctx ctx;
+
+	if (!(session = setup_ms12_session(params)))
+		return MUNIT_SKIP;
+
+	qd_session_set_output_cb(session, output_reconfig_output_cb, &ctx);
+	qd_session_set_realtime(session, true);
+
+	/* setup fft to determine peak freq and gain, with a 1s window */
+	for (size_t i = 0; i < QD_N_ELEMENTS(ctx.outputs); i++) {
+		for (size_t j = 0; j < QD_N_ELEMENTS(ctx.outputs[i].pa); j++)
+			peak_analyzer_init(&ctx.outputs[i].pa[j],
+					   48000, 12000, WIN_RECT);
+	}
+
+	/* create main input */
+	v = munit_parameters_get(params, "f");
+	if (!(f = find_filename(output_reconfig_files, v)))
+		return MUNIT_ERROR;
+
+	assert_not_null((src = ffmpeg_src_create(f, NULL)));
+	assert_not_null((input = ffmpeg_src_add_input(src, 0, session,
+						      QD_INPUT_MAIN)));
+
+	/* play */
+	assert_int(0, ==, ffmpeg_src_seek(src, 14000));
+	assert_int(0, ==, ffmpeg_src_thread_start(src));
+
+	for (int i = 0; i < QD_N_ELEMENTS(output_reconfig_sequence); i++) {
+		enum qd_output_id *outputs = output_reconfig_sequence[i];
+		if (session->type == QAP_SESSION_MS12_OTT &&
+		    (outputs[0] == QD_OUTPUT_7DOT1 ||
+		     outputs[1] == QD_OUTPUT_7DOT1)) {
+			/* skip 7.1 in OTT mode */
+			continue;
+		}
+		qd_session_configure_outputs(session, 2, outputs);
+		usleep(1000000);
+	}
+
+	/* stop */
+	ffmpeg_src_thread_stop(src);
+	ffmpeg_src_thread_join(src);
+
+	ffmpeg_src_destroy(src);
+	qd_session_destroy(session);
+
+	for (size_t i = 0; i < QD_N_ELEMENTS(ctx.outputs); i++) {
+		for (size_t j = 0; j < QD_N_ELEMENTS(ctx.outputs[i].pa); j++)
+			peak_analyzer_cleanup(&ctx.outputs[i].pa[j]);
+	}
+
+	return MUNIT_OK;
+}
+
+static char *parm_ms12_files_output_reconfig[] = {
+	"ddp", "aac_adts", "aac_loas", NULL
+};
+
+static MunitParameterEnum parms_ms12_output_reconfig[] = {
+	{ "t", parm_ms12_sessions_all },
+	{ "o", parm_ms12_outputs_pcm_stereo },
+	{ "f", parm_ms12_files_output_reconfig },
+	{ NULL, NULL },
+};
+
+/*
  * MS12 test suite
  */
 
@@ -1466,6 +1635,10 @@ static MunitTest ms12_tests[] = {
 	  test_ms12_pause,
 	  pretest_ms12, NULL,
 	  MUNIT_TEST_OPTION_NONE, parms_ms12_pause },
+	{ "/ms12/output_reconfig",
+	  test_ms12_output_reconfig,
+	  pretest_ms12, NULL,
+	  MUNIT_TEST_OPTION_NONE, parms_ms12_output_reconfig },
 	{ },
 };
 

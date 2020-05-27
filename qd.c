@@ -1764,6 +1764,12 @@ qd_session_configure_outputs(struct qd_session *session,
 	uint32_t outputs_present = 0;
 	int ret;
 
+	info("enable outputs:");
+	for (int i = 0; i < num_outputs; i++) {
+		if (outputs[i] != QD_OUTPUT_NONE)
+			info(" - %s", qd_output_id_to_str(outputs[i]));
+	}
+
 	memset(&qap_session_cfg, 0, sizeof (qap_session_cfg));
 
 	for (int i = 0; i < num_outputs; i++) {
