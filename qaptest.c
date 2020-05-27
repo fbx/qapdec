@@ -607,6 +607,164 @@ static MunitParameterEnum parms_ms12_assoc_mix[] = {
 };
 
 /*
+ * MS12: test Main+Main2 mixing
+ *
+ * Input files feature a single channel 997Hz tone at -20dBFS. Main is in left
+ * channel and Main2 is in right channel.
+ *
+ * Compute an FFT on 1s chunks of audio output data and verify we get the
+ * correct peak frequency and gain, testing at multiple "main1_mixgain" and
+ * "main2_mixgain" kvpairs values.
+ */
+
+struct main2_mix_ctx {
+	struct {
+		struct peak_analyzer pa[2];
+	} outputs[QD_MAX_OUTPUTS];
+	int gain;
+};
+
+static void
+main2_mix_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
+		    void *userdata)
+{
+	struct main2_mix_ctx *ctx = userdata;
+	struct peak_analyzer *pa;
+	size_t frame_size;
+
+	/* check output config */
+	assert_int(output->config.sample_rate, ==, 48000);
+	assert_int(output->config.bit_width, ==, 16);
+
+	frame_size = output->config.channels * output->config.bit_width / 8;
+	assert_int(buffer->common_params.size % frame_size, ==, 0);
+
+	/* feed left and right channel data */
+	pa = ctx->outputs[output->id].pa;
+
+	for (size_t i = 0; i < buffer->common_params.size; i += frame_size) {
+		int16_t *frame = buffer->common_params.data + i;
+		peak_analyzer_add_samples(&pa[0], frame + 0, 1);
+		peak_analyzer_add_samples(&pa[1], frame + 1, 1);
+	}
+
+	for (int i = 0; i < 2; i++) {
+		double freq, gain;
+
+		/* fill window before running fft and analyzing data */
+		if (pa[i].n_samples != pa[i].max_samples)
+			continue;
+
+		/* verify peak frequency and gain are correct */
+		assert_true(peak_analyzer_run(&pa[i], &freq, &gain));
+		assert_double(freq, ==, 997);
+		assert_double(gain, >, -20 + ctx->gain - 1.0);
+		assert_double(gain, <, -20 + ctx->gain + 1.0);
+
+		/* reset window */
+		pa[i].n_samples = 0;
+	}
+}
+
+static const struct file_alias main2_mix_main_files[] = {
+	{ "ddp", "Elementary_Streams/Mix_Fader/Mix_fader_neutral_2PID_ddp_main.ec3" },
+	{ NULL, NULL }
+};
+
+static const struct file_alias main2_mix_main2_files[] = {
+	{ "ddp", "Elementary_Streams/Mix_Fader/Mix_fader_neutral_2PID_ddp_assoc.ec3" },
+	{ NULL, NULL }
+};
+
+static MunitResult
+test_ms12_main2_mix(const MunitParameter params[],
+		    void *user_data_or_fixture)
+{
+	struct qd_session *session;
+	struct qd_input *input_main, *input_main2;
+	struct ffmpeg_src *src_main, *src_main2;
+	const char *v, *f_main, *f_main2;
+	struct main2_mix_ctx ctx;
+
+	if (!(session = setup_ms12_session(params)))
+		return MUNIT_SKIP;
+
+	qd_session_set_output_cb(session, main2_mix_output_cb, &ctx);
+
+	/* setup fft to determine peak freq/gain, with a 1s window */
+	for (size_t i = 0; i < QD_N_ELEMENTS(ctx.outputs); i++) {
+		for (size_t j = 0; j < QD_N_ELEMENTS(ctx.outputs[i].pa); j++)
+			peak_analyzer_init(&ctx.outputs[i].pa[j],
+					   48000, 48000, WIN_RECT);
+	}
+
+	/* set main/main2 mixing gain */
+	v = munit_parameters_get(params, "main_mixgain");
+	qd_session_set_kvpairs(session, "main1_mixgain=%s;main2_mixgain=%s", v, v);
+	ctx.gain = atoi(v);
+
+	/* create main input */
+	v = munit_parameters_get(params, "f");
+	if (!(f_main = find_filename(main2_mix_main_files, v)))
+		return MUNIT_ERROR;
+
+	assert_not_null((src_main = ffmpeg_src_create(f_main, NULL)));
+	assert_not_null((input_main = ffmpeg_src_add_input(src_main,
+							   0, session,
+							   QD_INPUT_MAIN)));
+
+	/* create main2 input */
+	v = munit_parameters_get(params, "f");
+	if (!(f_main2 = find_filename(main2_mix_main2_files, v)))
+		return MUNIT_ERROR;
+
+	assert_not_null((src_main2 = ffmpeg_src_create(f_main2, NULL)));
+	assert_not_null((input_main2 = ffmpeg_src_add_input(src_main2,
+							    0, session,
+							    QD_INPUT_MAIN2)));
+
+	/* skip silence and ref tone at beginning of input files */
+	assert_int(0, ==, ffmpeg_src_seek(src_main, 35000));
+	assert_int(0, ==, ffmpeg_src_seek(src_main2, 35000));
+
+	/* skip 1s of output data, to skip audio ramping up */
+	qd_session_set_output_discard_ms(session, 1000);
+
+	/* play */
+	assert_int(0, ==, ffmpeg_src_thread_start(src_main));
+	assert_int(0, ==, ffmpeg_src_thread_start(src_main2));
+	assert_int(0, ==, ffmpeg_src_thread_join(src_main));
+	assert_int(0, ==, ffmpeg_src_thread_join(src_main2));
+
+	ffmpeg_src_destroy(src_main);
+	ffmpeg_src_destroy(src_main2);
+	qd_session_destroy(session);
+
+	for (size_t i = 0; i < QD_N_ELEMENTS(ctx.outputs); i++) {
+		for (size_t j = 0; j < QD_N_ELEMENTS(ctx.outputs[i].pa); j++)
+			peak_analyzer_cleanup(&ctx.outputs[i].pa[j]);
+	}
+
+	return MUNIT_OK;
+}
+
+static char *parm_ms12_files_main2_mix[] = {
+	"ddp", NULL
+};
+
+static char *parm_ms12_main_mixgain[] = {
+	"-10,0,0", "-16,0,0", NULL,
+};
+
+static MunitParameterEnum parms_ms12_main2_mix[] = {
+	{ "t", parm_ms12_sessions_ott_only },
+	{ "o", parm_ms12_outputs_pcm_all },
+	{ "f", parm_ms12_files_main2_mix },
+	{ "main_mixgain", parm_ms12_main_mixgain },
+	{ NULL, NULL },
+};
+
+/*
  * MS12: test stereo downmix modes
  *
  * Input files will render a different, known fixed frequency based on the
@@ -1135,6 +1293,10 @@ static MunitTest ms12_tests[] = {
 	  test_ms12_assoc_mix,
 	  pretest_ms12, NULL,
 	  MUNIT_TEST_OPTION_NONE, parms_ms12_assoc_mix },
+	{ "/ms12/main2_mix",
+	  test_ms12_main2_mix,
+	  pretest_ms12, NULL,
+	  MUNIT_TEST_OPTION_NONE, parms_ms12_main2_mix },
 	{ "/ms12/stereo_downmix",
 	  test_ms12_stereo_downmix,
 	  pretest_ms12, NULL,
