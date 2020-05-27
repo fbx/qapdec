@@ -1375,7 +1375,9 @@ qd_input_write(struct qd_input *input, void *data, int size, int64_t pts)
 	/* XXX: don't use timestamps in OTT mode, otherwise dual decode and
 	 * pause commands do not work correctly */
 	if (pts == AV_NOPTS_VALUE ||
-	    input->session->type == QAP_SESSION_MS12_OTT) {
+	    input->session->ignore_timestamps > 0 ||
+	    (input->session->ignore_timestamps == -1 &&
+	     input->session->type == QAP_SESSION_MS12_OTT)) {
 		qap_buffer.common_params.timestamp = 0;
 		qap_buffer.buffer_parms.input_buf_params.flags =
 			QAP_BUFFER_NO_TSTAMP;
@@ -1873,6 +1875,11 @@ qd_session_set_output_discard_ms(struct qd_session *session,
 	session->output_discard_ms = discard_ms;
 }
 
+void qd_session_ignore_timestamps(struct qd_session *session, bool ignore)
+{
+	session->ignore_timestamps = !!ignore;
+}
+
 void
 qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id)
 {
@@ -1971,6 +1978,10 @@ qd_session_create(enum qd_module_type module, qap_session_t type)
 
 	session->module = module;
 	session->type = type;
+
+	/* by default, ignore input timetamps in OTT mode and use them in
+	 * broadcast mode */
+	session->ignore_timestamps = -1;
 
 	pthread_mutex_init(&session->lock, NULL);
 	pthread_cond_init(&session->cond, NULL);

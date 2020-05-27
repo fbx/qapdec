@@ -143,6 +143,7 @@ struct qd_session {
 	bool chmod_locking;
 	bool realtime;
 	bool terminated;
+	int ignore_timestamps;
 	int outputs_configure_count;
 	char *output_dir;
 	int64_t output_discard_ms;
@@ -179,6 +180,7 @@ void qd_session_set_output_discard_ms(struct qd_session *session,
 				      int64_t discard_ms);
 void qd_session_set_buffer_size_ms(struct qd_session *session,
 				   uint32_t buffer_size_ms);
+void qd_session_ignore_timestamps(struct qd_session *session, bool ignore);
 int qd_session_configure_outputs(struct qd_session *session,
 				 int num_outputs,
 				 const enum qd_output_id *outputs);
