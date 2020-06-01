@@ -155,6 +155,7 @@ if [ ! -e Makefile ]; then
         --enable-muxer=adts \
         --enable-muxer=latm \
         --enable-demuxer=aac \
+        --enable-demuxer=loas \
         --enable-demuxer=ac3 \
         --enable-demuxer=eac3 \
         --enable-demuxer=truehd \
