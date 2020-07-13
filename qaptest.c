@@ -1412,10 +1412,17 @@ test_ms12_pause(const MunitParameter params[], void *user_data_or_fixture)
 	usleep(1500000);
 
 	for (int i = 0; i < 3; i++) {
-		/* block input feeding, and pause */
-		pthread_mutex_lock(&ctx.lock);
+		/* block input feeding */
 		assert_int(0, ==, qd_input_block(input, true));
+
+		/* wait for some input data to be consumed */
+		usleep(32000);
+
+		/* pause while not full*/
 		assert_int(0, ==, qd_input_pause(input));
+
+		/* record paused state and wait */
+		pthread_mutex_lock(&ctx.lock);
 		ctx.state = QD_INPUT_STATE_PAUSED;
 		ctx.state_change_time = qd_get_time();
 		pthread_mutex_unlock(&ctx.lock);
