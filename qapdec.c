@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <unistd.h>
 #include <poll.h>
+#include <time.h>
 #include <termios.h>
 #include <assert.h>
 #include <signal.h>
@@ -28,6 +29,13 @@ static enum kbd_command kbd_pending_command = KBD_NONE;
 
 static struct ffmpeg_src *g_ffmpeg_sources[QD_MAX_INPUTS];
 static struct qd_session *g_session;
+
+static uint64_t get_cpu_time(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+	return ts.tv_sec * UINT64_C(1000000) + ts.tv_nsec / UINT64_C(1000);
+}
 
 static struct qd_input *get_nth_input(int n)
 {
@@ -299,6 +307,7 @@ int main(int argc, char **argv)
 	uint64_t src_duration;
 	uint64_t start_time;
 	uint64_t end_time;
+	uint64_t cpu_time;
 	int64_t seek_position = 0;
 	int64_t discard_duration = 0;
 	bool render_realtime = false;
@@ -605,6 +614,7 @@ again:
 	}
 
 	end_time = qd_get_time();
+	cpu_time = get_cpu_time();
 
 	for (int i = 0; i < QD_MAX_OUTPUTS; i++) {
 		struct qd_output *output;
@@ -629,9 +639,20 @@ again:
 	qd_session_destroy(g_session);
 	g_session = NULL;
 
-	if (src_duration > 0 && !quit) {
-		notice("render speed: %.2fx realtime",
-		       (float)src_duration / (float)(end_time - start_time));
+	if (!quit) {
+		if (src_duration > 0) {
+			notice("Elapsed: %" PRIu64 ".%" PRIu64 "s, "
+			       "CPU: %" PRIu64 ".%" PRIu64 "s, "
+			       "render speed: %.2fx realtime",
+			       end_time / QD_SECOND, end_time % QD_SECOND / QD_MSECOND,
+			       cpu_time / QD_SECOND, cpu_time % QD_SECOND / QD_MSECOND,
+			       (float)src_duration / (float)(end_time - start_time));
+		} else {
+			notice("Elapsed: %" PRIu64 ".%" PRIu64 "s, "
+			       "CPU: %" PRIu64 ".%" PRIu64 "s",
+			       end_time / QD_SECOND, end_time % QD_SECOND / QD_MSECOND,
+			       cpu_time / QD_SECOND, cpu_time % QD_SECOND / QD_MSECOND);
+		}
 	}
 
 	if (!quit && --loops > 0)
