@@ -1287,11 +1287,6 @@ qd_input_create_from_avstream(struct qd_session *session, enum qd_input_id id,
 		qap_mod_cfg.is_interleaved = true;
 		qap_mod_cfg.sample_rate = codecpar->sample_rate;
 		qap_mod_cfg.bit_width = codecpar->bits_per_coded_sample;
-	} else {
-		/* XXX: this needs to be set, otherwise number of decoded
-		 * frames is not reported correctly by the
-		 * MS12_STREAM_GET_DECODER_OUTPUT_FRAME command */
-		qap_mod_cfg.sample_rate = 48000;
 	}
 
 	av_get_channel_layout_string(channel_layout_desc,
