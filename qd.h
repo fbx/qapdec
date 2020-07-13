@@ -201,6 +201,7 @@ int qd_input_set_buffer_size(struct qd_input *input, uint32_t buffer_size);
 uint64_t qd_input_get_decoded_frames(struct qd_input *input);
 int qd_input_get_decoder_io_info(struct qd_input *input,
 				 qap_report_frames_t *report);
+int qd_input_get_latency(struct qd_input *input);
 void qd_input_terminate(struct qd_input *input);
 void qd_input_destroy(struct qd_input *input);
 struct qd_input *qd_input_create(struct qd_session *session,

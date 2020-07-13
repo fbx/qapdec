@@ -1099,6 +1099,27 @@ qd_input_get_io_info(struct qd_input *input, qap_report_frames_t *report)
 	return 0;
 }
 
+int
+qd_input_get_latency(struct qd_input *input)
+{
+	uint32_t param_id = MS12_STREAM_GET_LATENCY;
+	int32_t latency = 0;
+	uint32_t reply_size = sizeof (latency);
+	int ret;
+
+	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_GET_PARAM,
+			     sizeof (param_id), &param_id,
+			     &reply_size, &latency);
+	if (ret < 0) {
+		err("%s: failed to get latency", input->name);
+		return 0;
+	}
+
+	assert(reply_size == sizeof (latency));
+
+	return latency;
+}
+
 void
 qd_input_terminate(struct qd_input *input)
 {
@@ -1175,6 +1196,9 @@ qd_input_create(struct qd_session *session, enum qd_input_id id,
 
 		input->buffer_size = buffer_size;
 	}
+
+	info(" in: %s: latency %dms", input->name,
+	     qd_input_get_latency(input));
 
 	if (qd_input_start(input))
 		goto fail;
