@@ -336,6 +336,10 @@ int main(int argc, char **argv)
 				outputs[num_outputs++] = QD_OUTPUT_AC3;
 			else if (!strcmp(optarg, "ddp") || !strcmp(optarg, "eac3"))
 				outputs[num_outputs++] = QD_OUTPUT_EAC3;
+			else if (!strcmp(optarg, "dd_dec") || !strcmp(optarg, "ac3_dec"))
+				outputs[num_outputs++] = QD_OUTPUT_AC3_DECODED;
+			else if (!strcmp(optarg, "ddp_dec") || !strcmp(optarg, "eac3_dec"))
+				outputs[num_outputs++] = QD_OUTPUT_EAC3_DECODED;
 			else if (!strcmp(optarg, "stereo") || atoi(optarg) == 2)
 				outputs[num_outputs++] = QD_OUTPUT_STEREO;
 			else if (!strcmp(optarg, "5.1") || atoi(optarg) == 6)

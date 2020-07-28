@@ -10,6 +10,10 @@
 #include <assert.h>
 #include <sys/stat.h>
 
+#include <libswresample/swresample.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/samplefmt.h>
+
 #include <qap_defs.h>
 #include <dolby_ms12.h>
 #include <dts_m8.h>
@@ -33,6 +37,30 @@ int qd_debug_level = 1;
 
 struct qd_module_handle {
 	qap_lib_handle_t handle;
+};
+
+typedef void (*qd_sw_decoder_func_t)(void *priv, qap_audio_buffer_t *buffer);
+
+struct qd_sw_decoder {
+	AVCodecContext *codec;
+	qd_sw_decoder_func_t cb;
+	void *cb_data;
+
+	/* resampler */
+	SwrContext *swr;
+	int swr_in_format;
+	int swr_out_format;
+	uint64_t swr_in_channel_layout;
+	uint64_t swr_out_channel_layout;
+	void *swr_buffer;
+	int swr_buffer_size;
+
+	/* output pcm config */
+	int out_format;
+	int out_sample_rate;
+	int out_channels;
+	uint64_t out_channel_layout;
+	qap_output_config_t out_config;
 };
 
 static struct qd_module_handle qd_modules[QD_MAX_MODULES];
@@ -344,6 +372,10 @@ qd_output_id_to_str(enum qd_output_id id)
 		return "AC3";
 	case QD_OUTPUT_EAC3:
 		return "EAC3";
+	case QD_OUTPUT_AC3_DECODED:
+		return "AC3_DECODED";
+	case QD_OUTPUT_EAC3_DECODED:
+		return "EAC3_DECODED";
 	case QD_OUTPUT_NONE:
 	case QD_MAX_OUTPUTS:
 		break;
@@ -370,6 +402,279 @@ audio_chmap_to_str(int channels, uint8_t *map)
 	buf[offset] = '\0';
 
 	return buf;
+}
+
+static void
+qd_sw_decoder_destroy(struct qd_sw_decoder *dec)
+{
+	if (!dec)
+		return;
+
+	avcodec_free_context(&dec->codec);
+	swr_free(&dec->swr);
+	free(dec->swr_buffer);
+	free(dec);
+}
+
+static struct qd_sw_decoder *
+qd_sw_decoder_create(qap_audio_format_t format)
+{
+	struct qd_sw_decoder *dec;
+	enum AVCodecID avcodec_id;
+	AVCodec *avcodec;
+
+	switch (format) {
+	case QAP_AUDIO_FORMAT_AC3:
+		avcodec_id = AV_CODEC_ID_AC3;
+		break;
+	case QAP_AUDIO_FORMAT_EAC3:
+		avcodec_id = AV_CODEC_ID_EAC3;
+		break;
+	default:
+		return NULL;
+	}
+
+	avcodec = avcodec_find_decoder(avcodec_id);
+	if (avcodec == NULL) {
+		err("swdec: no decoder available for codec %s",
+		    audio_format_to_str(format));
+		return NULL;
+	}
+
+	dec = calloc(1, sizeof (*dec));
+	if (!dec)
+		return NULL;
+
+	dec->codec = avcodec_alloc_context3(avcodec);
+	if (!dec->codec) {
+		err("swdec: failed to create %s decoder",
+		    audio_format_to_str(format));
+		goto fail;
+	}
+
+	if (avcodec_open2(dec->codec, avcodec, NULL)) {
+		err("swdec: failed to open decoder");
+		goto fail;
+	}
+
+	dec->swr = swr_alloc();
+	if (!dec->swr) {
+		err("swdec: failed to allocate resampler context");
+		goto fail;
+	}
+
+	dec->codec->time_base.num = QD_SECOND;
+	dec->codec->time_base.den = 1;
+
+	dec->swr_out_format = AV_SAMPLE_FMT_NONE;
+	dec->swr_in_format = AV_SAMPLE_FMT_NONE;
+	dec->swr_in_channel_layout = 0;
+
+	dec->out_format = AV_SAMPLE_FMT_NONE;
+
+	return dec;
+
+fail:
+	qd_sw_decoder_destroy(dec);
+	return NULL;
+}
+
+static void
+qd_sw_decoder_set_callback(struct qd_sw_decoder *dec,
+			   qd_sw_decoder_func_t func, void *userdata)
+{
+	dec->cb = func;
+	dec->cb_data = userdata;
+}
+
+static uint8_t
+convert_from_av_channel(uint64_t ch)
+{
+	switch (ch) {
+	case AV_CH_STEREO_LEFT:
+	case AV_CH_FRONT_LEFT:
+		return QAP_AUDIO_PCM_CHANNEL_L;
+	case AV_CH_STEREO_RIGHT:
+	case AV_CH_FRONT_RIGHT:
+		return QAP_AUDIO_PCM_CHANNEL_R;
+	case AV_CH_FRONT_CENTER:
+		return QAP_AUDIO_PCM_CHANNEL_C;
+	case AV_CH_LOW_FREQUENCY:
+		return QAP_AUDIO_PCM_CHANNEL_LFE;
+	case AV_CH_BACK_LEFT:
+		return QAP_AUDIO_PCM_CHANNEL_LB;
+	case AV_CH_BACK_RIGHT:
+		return QAP_AUDIO_PCM_CHANNEL_RB;
+	case AV_CH_FRONT_LEFT_OF_CENTER:
+		return QAP_AUDIO_PCM_CHANNEL_FLC;
+	case AV_CH_FRONT_RIGHT_OF_CENTER:
+		return QAP_AUDIO_PCM_CHANNEL_FRC;
+	case AV_CH_BACK_CENTER:
+		return QAP_AUDIO_PCM_CHANNEL_CB;
+	case AV_CH_SIDE_LEFT:
+		return QAP_AUDIO_PCM_CHANNEL_LS;
+	case AV_CH_SIDE_RIGHT:
+		return QAP_AUDIO_PCM_CHANNEL_RS;
+	case AV_CH_TOP_CENTER:
+		return QAP_AUDIO_PCM_CHANNEL_TC;
+	case AV_CH_TOP_FRONT_LEFT:
+		return QAP_AUDIO_PCM_CHANNEL_TFL;
+	case AV_CH_TOP_FRONT_CENTER:
+		return QAP_AUDIO_PCM_CHANNEL_TFC;
+	case AV_CH_TOP_FRONT_RIGHT:
+		return QAP_AUDIO_PCM_CHANNEL_TFR;
+	case AV_CH_TOP_BACK_LEFT:
+		return QAP_AUDIO_PCM_CHANNEL_TBL;
+	case AV_CH_TOP_BACK_CENTER:
+		return QAP_AUDIO_PCM_CHANNEL_TBC;
+	case AV_CH_TOP_BACK_RIGHT:
+		return QAP_AUDIO_PCM_CHANNEL_TBR;
+	case AV_CH_WIDE_LEFT:
+		return QAP_AUDIO_PCM_CHANNEL_LW;
+	case AV_CH_WIDE_RIGHT:
+		return QAP_AUDIO_PCM_CHANNEL_RW;
+	case AV_CH_SURROUND_DIRECT_LEFT:
+		return QAP_AUDIO_PCM_CHANNEL_LSD;
+	case AV_CH_SURROUND_DIRECT_RIGHT:
+		return QAP_AUDIO_PCM_CHANNEL_RSD;
+	case AV_CH_LOW_FREQUENCY_2:
+		return QAP_AUDIO_PCM_CHANNEL_LFE2;
+	default:
+		return -1;
+	}
+}
+
+static int
+qd_sw_decoder_process_frame(struct qd_sw_decoder *dec)
+{
+	AVFrame frame = {};
+	qap_audio_buffer_t out;
+	int size;
+	int ret;
+
+	ret = avcodec_receive_frame(dec->codec, &frame);
+	if (ret == AVERROR(EAGAIN))
+		return ret;
+
+	if (ret != 0) {
+		err("failed to read decoded audio: %s", av_err2str(ret));
+		return ret;
+	}
+
+	/* generate output pcm config once, based on first decoded frame */
+	if (dec->out_config.channels == 0) {
+		/* ffmpeg config */
+		dec->out_format = AV_SAMPLE_FMT_S16;
+		dec->out_sample_rate = frame.sample_rate;
+		dec->out_channels = frame.channels;
+		dec->out_channel_layout = frame.channel_layout;
+
+		/* same config in qap format */
+		dec->out_config.format = QAP_AUDIO_FORMAT_PCM_16_BIT;
+		dec->out_config.is_interleaved = true;
+		dec->out_config.bit_width = 16;
+		dec->out_config.sample_rate = frame.sample_rate;
+		dec->out_config.channels = frame.channels;
+		for (int i = 0; i < frame.channels; i++) {
+			uint64_t ch = av_channel_layout_extract_channel(
+				frame.channel_layout, i);
+			dec->out_config.ch_map[i] = convert_from_av_channel(ch);
+		}
+	}
+
+	/* reconfigure resampler if input or output format changes */
+	if (dec->swr_in_format != frame.format ||
+	    dec->swr_in_channel_layout != frame.channel_layout ||
+	    dec->swr_out_format != dec->out_format ||
+	    dec->swr_out_channel_layout != dec->out_channel_layout) {
+		av_opt_set_int(dec->swr, "in_channel_layout",
+			       frame.channel_layout, 0);
+		av_opt_set_int(dec->swr, "in_sample_fmt",
+			       frame.format, 0);
+		av_opt_set_int(dec->swr, "in_sample_rate",
+			       frame.sample_rate, 0);
+		av_opt_set_int(dec->swr, "out_channel_layout",
+			       dec->out_channel_layout, 0);
+		av_opt_set_int(dec->swr, "out_sample_fmt",
+			       dec->out_format, 0);
+		av_opt_set_int(dec->swr, "out_sample_rate",
+			       dec->out_sample_rate, 0);
+
+		ret = swr_init(dec->swr);
+		if (ret < 0) {
+			err("failed to setup resampler: %s", av_err2str(ret));
+			return ret;
+		}
+
+		dec->swr_in_format = frame.format;
+		dec->swr_in_channel_layout = frame.channel_layout;
+		dec->swr_out_format = dec->out_format;
+		dec->swr_out_channel_layout = dec->out_channel_layout;
+	}
+
+	/* resample/convert pcm buffer */
+	size = av_samples_get_buffer_size(NULL, dec->out_channels,
+					  frame.nb_samples,
+					  dec->out_format, 1);
+	if (size < 0) {
+		err("failed to get resampler buffer size: %s", av_err2str(ret));
+		return ret;
+	}
+
+	if (size != dec->swr_buffer_size) {
+		void *p;
+
+		p = realloc(dec->swr_buffer, size);
+		if (!p)
+			return AVERROR(ENOMEM);
+
+		dec->swr_buffer_size = size;
+		dec->swr_buffer = p;
+	}
+
+	ret = swr_convert(dec->swr,
+			  (uint8_t **)&dec->swr_buffer, dec->swr_buffer_size,
+			  (const uint8_t **)frame.data, frame.nb_samples);
+	if (ret < 0) {
+		err("failed to resample audio: %s", av_err2str(ret));
+		return ret;
+	}
+
+	/* output converted pcm buffer in qap format */
+	memset(&out, 0, sizeof (out));
+	out.common_params.data = dec->swr_buffer;
+	out.common_params.size = dec->swr_buffer_size;
+	out.common_params.timestamp = frame.pts;
+	out.buffer_parms.output_buf_params.output_config = dec->out_config;
+
+	dec->cb(dec->cb_data, &out);
+
+	av_frame_unref(&frame);
+
+	return 0;
+}
+
+static int
+qd_sw_decoder_write(struct qd_sw_decoder *dec, qap_audio_buffer_t *buffer)
+{
+	AVPacket pkt = {};
+	int ret;
+
+	pkt.data = buffer->common_params.data;
+	pkt.size = buffer->common_params.size;
+	pkt.pts = buffer->common_params.timestamp;
+
+	ret = avcodec_send_packet(dec->codec, &pkt);
+	if (ret != 0) {
+		err("failed to decode audio: %s", av_err2str(ret));
+		return ret;
+	}
+
+	do {
+		ret = qd_sw_decoder_process_frame(dec);
+	} while (ret == 0);
+
+	return 0;
 }
 
 static int
@@ -617,6 +922,67 @@ output_write_buffer(struct qd_output *out, const qap_buffer_common_t *buffer)
 }
 
 static void
+qd_output_set_config(struct qd_output *output, qap_output_config_t *cfg)
+{
+	info("out: %s: config: id=0x%x format=%s sr=%d ss=%d "
+	     "interleaved=%d channels=%d chmap[%s]",
+	     output->name, cfg->id,
+	     audio_format_to_str(cfg->format),
+	     cfg->sample_rate, cfg->bit_width, cfg->is_interleaved,
+	     cfg->channels, audio_chmap_to_str(cfg->channels, cfg->ch_map));
+
+	output->config = *cfg;
+
+	if (!output->start_time)
+		output->start_time = qd_get_time();
+
+	output_write_header(output);
+}
+
+static void handle_buffer(struct qd_session *session,
+			  qap_audio_buffer_t *buffer);
+
+static void
+handle_decoded_buffer(void *userdata, qap_audio_buffer_t *buffer)
+{
+	struct qd_output *output = userdata;
+	qap_output_config_t *config;
+
+	buffer->buffer_parms.output_buf_params.output_id = output->id;
+	config = &buffer->buffer_parms.output_buf_params.output_config;
+
+	if (memcmp(config, &output->config, sizeof (output->config)))
+		qd_output_set_config(output, config);
+
+	handle_buffer(output->session, buffer);
+}
+
+static void
+handle_encoded_buffer(struct qd_output *output, qap_audio_buffer_t *buffer)
+{
+	struct qd_output *dec_output;
+
+	if (output->id == QD_OUTPUT_AC3)
+		dec_output = &output->session->outputs[QD_OUTPUT_AC3_DECODED];
+	else
+		dec_output = &output->session->outputs[QD_OUTPUT_EAC3_DECODED];
+
+	if (!dec_output->enabled)
+		return;
+
+	if (!dec_output->swdec) {
+		dec_output->swdec = qd_sw_decoder_create(output->config.format);
+		if (!dec_output->swdec)
+			return;
+		qd_sw_decoder_set_callback(dec_output->swdec,
+					   handle_decoded_buffer,
+					   dec_output);
+	}
+
+	qd_sw_decoder_write(dec_output->swdec, buffer);
+}
+
+static void
 handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 {
 	int id = buffer->buffer_parms.output_buf_params.output_id;
@@ -673,11 +1039,16 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 		}
 	}
 
+	if (output->id == QD_OUTPUT_AC3 || output->id == QD_OUTPUT_EAC3)
+		handle_encoded_buffer(output, buffer);
+
 	if (pts <= session->output_discard_ms * 1000) {
 		dbg("out: %s: discard buffer at pos %" PRIu64 "ms",
 		    output->name, pts / 1000);
 		return;
 	}
+
+	dbg("out: %s: render buffer", output->name);
 
 	output->pts = pts;
 
@@ -693,23 +1064,10 @@ static void
 handle_output_config(struct qd_session *session,
 		     qap_output_buff_params_t *out_buffer)
 {
-	qap_output_config_t *cfg = &out_buffer->output_config;
 	struct qd_output *output =
 		qd_session_get_output(session, out_buffer->output_id);
 
-	info("out: %s: config: id=0x%x format=%s sr=%d ss=%d "
-	     "interleaved=%d channels=%d chmap[%s]",
-	     output->name, cfg->id,
-	     audio_format_to_str(cfg->format),
-	     cfg->sample_rate, cfg->bit_width, cfg->is_interleaved,
-	     cfg->channels, audio_chmap_to_str(cfg->channels, cfg->ch_map));
-
-	output->config = *cfg;
-
-	if (!output->start_time)
-		output->start_time = qd_get_time();
-
-	output_write_header(output);
+	qd_output_set_config(output, &out_buffer->output_config);
 }
 
 static void
@@ -1808,16 +2166,32 @@ qd_session_configure_outputs(struct qd_session *session,
 			output_cfg->channels = 8;
 			break;
 		case QD_OUTPUT_AC3:
+		case QD_OUTPUT_AC3_DECODED:
 			output_cfg->format = QAP_AUDIO_FORMAT_AC3;
 			break;
 		case QD_OUTPUT_EAC3:
+		case QD_OUTPUT_EAC3_DECODED:
 			output_cfg->format = QAP_AUDIO_FORMAT_EAC3;
 			break;
-		default:
+		case QD_OUTPUT_NONE:
 			continue;
+		default:
+			err("invalid output id %d", id);
+			return -1;
 		}
 
 		outputs_present |= 1 << id;
+
+		if (id == QD_OUTPUT_AC3_DECODED) {
+			outputs_present |= 1 << QD_OUTPUT_AC3;
+			id = QD_OUTPUT_AC3;
+		}
+
+		if (id == QD_OUTPUT_EAC3_DECODED) {
+			outputs_present |= 1 << QD_OUTPUT_EAC3;
+			id = QD_OUTPUT_EAC3;
+		}
+
 		output_cfg->id = id;
 		qap_session_cfg.num_output++;
 	}
@@ -1945,6 +2319,7 @@ qd_session_destroy(struct qd_session *session)
 		struct qd_output *output = &session->outputs[i];
 		if (output->stream)
 			fclose(output->stream);
+		qd_sw_decoder_destroy(output->swdec);
 	}
 
 	pthread_cond_destroy(&session->cond);

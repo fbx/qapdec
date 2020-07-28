@@ -13,7 +13,7 @@ all:
 # qd helper lib
 #
 
-qd_pkgs = qap_wrapper libavformat libavcodec libavdevice libavutil
+qd_pkgs = qap_wrapper libavformat libavcodec libavdevice libavutil libswresample
 qd_includes = $(shell $(PKG_CONFIG) --static --cflags $(qd_pkgs))
 qd_ldlibs = $(shell $(PKG_CONFIG) --static --libs $(qd_pkgs))
 

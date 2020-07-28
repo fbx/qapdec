@@ -103,7 +103,7 @@ p "FFMPEG"
 
 cd "$D"
 
-pkg="ffmpeg-4.2.2"
+pkg="ffmpeg-4.3.1"
 archive="$pkg.tar.bz2"
 S="$D/src/$pkg"
 
@@ -140,7 +140,7 @@ if [ ! -e Makefile ]; then
         --disable-autodetect \
         --disable-programs \
         --disable-swscale \
-        --disable-swresample \
+        --enable-swresample \
         --enable-avdevice \
         --enable-avfilter \
         --enable-small \

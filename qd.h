@@ -50,6 +50,8 @@ enum qd_output_id {
 	QD_OUTPUT_7DOT1,
 	QD_OUTPUT_AC3,
 	QD_OUTPUT_EAC3,
+	QD_OUTPUT_AC3_DECODED,
+	QD_OUTPUT_EAC3_DECODED,
 	QD_MAX_OUTPUTS,
 };
 
@@ -63,6 +65,8 @@ enum qd_input_id {
 	QD_INPUT_EXT_PCM,
 	QD_MAX_INPUTS,
 };
+
+struct qd_sw_decoder;
 
 struct qd_output {
 	const char *name;
@@ -81,6 +85,7 @@ struct qd_output {
 	uint64_t total_frames;
 	FILE *stream;
 	struct qd_session *session;
+	struct qd_sw_decoder *swdec;
 };
 
 enum qd_input_state {
