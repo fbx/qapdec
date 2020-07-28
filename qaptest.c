@@ -202,6 +202,11 @@ static char *parm_ms12_outputs_pcm_all[] = {
 	"2.0", "5.1", "7.1", "2.0+5.1", "2.0+7.1", NULL
 };
 
+static char *parm_ms12_outputs_all[] = {
+	"2.0", "5.1", "7.1", "ac3", "eac3",
+	"2.0+5.1", "2.0+7.1", "2.0+ac3", "2.0+eac3", NULL
+};
+
 static char *parm_ms12_outputs_pcm_stereo[] = {
 	"2.0", NULL
 };
@@ -229,7 +234,7 @@ setup_ms12_session(const MunitParameter params[])
 {
 	struct qd_session *session;
 	qap_session_t session_type = QAP_SESSION_BROADCAST;
-	enum qd_output_id outputs[4] = {};
+	enum qd_output_id outputs[12] = {};
 	int n_outputs = 0;
 	const char *v;
 	char *dump_path;
@@ -260,9 +265,9 @@ setup_ms12_session(const MunitParameter params[])
 		else if (!strncmp(v, "7.1", n))
 			id = QD_OUTPUT_7DOT1;
 		else if (!strncmp(v, "ac3", n))
-			id = QD_OUTPUT_AC3;
+			id = QD_OUTPUT_AC3_DECODED;
 		else if (!strncmp(v, "eac3", n))
-			id = QD_OUTPUT_EAC3;
+			id = QD_OUTPUT_EAC3_DECODED;
 
 		v += n;
 
@@ -495,6 +500,9 @@ assoc_mix_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
 	struct peak_analyzer *pa;
 	size_t frame_size;
 
+	if (!qd_format_is_pcm(output->config.format))
+		return;
+
 	/* check output config */
 	assert_int(output->config.sample_rate, ==, 48000);
 	assert_int(output->config.bit_width, ==, 16);
@@ -630,7 +638,7 @@ static char *parm_ms12_xu_assoc_mix[] = {
 
 static MunitParameterEnum parms_ms12_assoc_mix[] = {
 	{ "t", parm_ms12_sessions_all },
-	{ "o", parm_ms12_outputs_pcm_all },
+	{ "o", parm_ms12_outputs_all },
 	{ "f", parm_ms12_files_assoc_mix },
 	{ "xu", parm_ms12_xu_assoc_mix },
 	{ NULL, NULL },
