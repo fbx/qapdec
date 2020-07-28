@@ -175,6 +175,9 @@ struct ffmpeg_src {
 int qd_init(void);
 uint64_t qd_get_time(void);
 
+bool qd_format_is_pcm(qap_audio_format_t format);
+bool qd_format_is_raw(qap_audio_format_t format);
+
 struct qd_session *qd_session_create(enum qd_module_type module,
 				     qap_session_t type);
 void qd_session_destroy(struct qd_session *session);

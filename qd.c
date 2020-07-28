@@ -677,8 +677,8 @@ qd_sw_decoder_write(struct qd_sw_decoder *dec, qap_audio_buffer_t *buffer)
 	return 0;
 }
 
-static int
-format_is_pcm(qap_audio_format_t format)
+bool
+qd_format_is_pcm(qap_audio_format_t format)
 {
 	return format == QAP_AUDIO_FORMAT_PCM_16_BIT ||
 		format == QAP_AUDIO_FORMAT_PCM_32_BIT ||
@@ -686,10 +686,10 @@ format_is_pcm(qap_audio_format_t format)
 		format == QAP_AUDIO_FORMAT_PCM_24_BIT_PACKED;
 }
 
-static int
-format_is_raw(qap_audio_format_t format)
+bool
+qd_format_is_raw(qap_audio_format_t format)
 {
-	return format_is_pcm(format) ||
+	return qd_format_is_pcm(format) ||
 		format == QAP_AUDIO_FORMAT_AAC;
 }
 
@@ -826,7 +826,7 @@ output_write_header(struct qd_output *out)
 		info("dumping audio output to %s", filename);
 	}
 
-	if (!format_is_pcm(out->config.format)) {
+	if (!qd_format_is_pcm(out->config.format)) {
 		// nothing to do here
 		return 0;
 	}
@@ -998,7 +998,7 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 	    output->config.sample_rate,
 	    buffer->common_params.timestamp - output->last_ts);
 
-	if (format_is_pcm(output->config.format)) {
+	if (qd_format_is_pcm(output->config.format)) {
 		output->total_frames += buffer->common_params.size /
 			(output->config.bit_width / 8 *
 			 output->config.channels);
@@ -1009,7 +1009,7 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 	output->last_ts = buffer->common_params.timestamp;
 	output->total_bytes += buffer->common_params.size;
 
-	if (format_is_pcm(output->config.format)) {
+	if (qd_format_is_pcm(output->config.format)) {
 		pts = output->total_frames * 1000000 /
 			output->config.sample_rate;
 	} else if (output->config.format == QAP_AUDIO_FORMAT_AC3 ||
@@ -1533,7 +1533,7 @@ qd_input_create(struct qd_session *session, enum qd_input_id id,
 		goto fail;
 	}
 
-	if (format_is_pcm(qap_config->format)) {
+	if (qd_format_is_pcm(qap_config->format)) {
 		uint32_t buffer_size;
 
 		buffer_size = qd_input_get_buffer_size(input);
@@ -1640,7 +1640,7 @@ qd_input_create_from_avstream(struct qd_session *session, enum qd_input_id id,
 	qap_mod_cfg.flags = qap_flags;
 	qap_mod_cfg.format = qap_format;
 
-	if (format_is_raw(qap_format)) {
+	if (qd_format_is_raw(qap_format)) {
 		qap_mod_cfg.channels = codecpar->channels;
 		qap_mod_cfg.is_interleaved = true;
 		qap_mod_cfg.sample_rate = codecpar->sample_rate;
@@ -1652,7 +1652,7 @@ qd_input_create_from_avstream(struct qd_session *session, enum qd_input_id id,
 				     codecpar->channels,
 				     codecpar->channel_layout);
 
-	if (format_is_pcm(qap_format)) {
+	if (qd_format_is_pcm(qap_format)) {
 		notice(" in: %s: use stream %d, %s, %d Hz, %s, %d bits, %" PRIi64 " kb/s",
 		       qd_input_id_to_str(id), avstream->id,
 		       avcodec_get_name(codecpar->codec_id),
