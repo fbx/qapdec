@@ -202,6 +202,7 @@ void qd_session_set_output_cb(struct qd_session *session, qd_output_func_t func,
 int qd_input_start(struct qd_input *input);
 int qd_input_pause(struct qd_input *input);
 int qd_input_stop(struct qd_input *input);
+int qd_input_flush(struct qd_input *input);
 int qd_input_block(struct qd_input *input, bool block);
 int qd_input_send_eos(struct qd_input *input);
 uint32_t qd_input_get_buffer_size(struct qd_input *input);

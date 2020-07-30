@@ -1337,6 +1337,23 @@ qd_input_stop(struct qd_input *input)
 }
 
 int
+qd_input_flush(struct qd_input *input)
+{
+	int ret;
+
+	info(" in: %s: flush", input->name);
+
+	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_FLUSH,
+			     0, NULL, NULL, NULL);
+	if (ret) {
+		err("QAP_SESSION_CMD_FLUSH command failed");
+		return 1;
+	}
+
+	return 0;
+}
+
+int
 qd_input_block(struct qd_input *input, bool block)
 {
 	info(" in: %s: %s", input->name, block ? "block" : "unblock");
@@ -1494,6 +1511,8 @@ qd_input_destroy(struct qd_input *input)
 	if (!input)
 		return;
 
+	qd_input_flush(input);
+
 	if (input->module && qap_module_deinit(input->module))
 		err("failed to deinit %s module", input->name);
 
@@ -1560,6 +1579,8 @@ qd_input_create(struct qd_session *session, enum qd_input_id id,
 
 	if (qd_input_start(input))
 		goto fail;
+
+	qd_input_flush(input);
 
 	return input;
 
