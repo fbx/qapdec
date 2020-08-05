@@ -455,6 +455,9 @@ test_ms12_channel_sweep(const MunitParameter params[],
 	assert_int(0, ==, ffmpeg_src_thread_start(src));
 	assert_int(0, ==, ffmpeg_src_thread_join(src));
 
+	/* drain output */
+	qd_session_wait_eos(session, QD_INPUT_MAIN);
+
 	/* check we received the expected number of input configuration events */
 	assert_int(ctx.n_configs, ==, ctx.f->n_configs);
 
@@ -501,6 +504,9 @@ assoc_mix_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
 	size_t frame_size;
 
 	if (!qd_format_is_pcm(output->config.format))
+		return;
+
+	if (output->pts > 8 * QD_SECOND)
 		return;
 
 	/* check output config */
@@ -616,6 +622,10 @@ test_ms12_assoc_mix(const MunitParameter params[],
 	assert_int(0, ==, ffmpeg_src_thread_join(src_main));
 	assert_int(0, ==, ffmpeg_src_thread_join(src_assoc));
 
+	/* drain output */
+	qd_session_wait_eos(session, QD_INPUT_MAIN);
+	qd_session_wait_eos(session, QD_INPUT_ASSOC);
+
 	ffmpeg_src_destroy(src_main);
 	ffmpeg_src_destroy(src_assoc);
 	qd_session_destroy(session);
@@ -699,7 +709,8 @@ assoc_disappearing_output_cb(struct qd_output *output, qap_audio_buffer_t *buffe
 			out->r_silent_frame_count = 0;
 
 		if (output->pts < 10 * QD_SECOND ||
-		    output->pts > 21 * QD_SECOND) {
+		    (output->pts > 21 * QD_SECOND &&
+		     output->pts < 29.9 * QD_SECOND)) {
 			/* silence is not allowed in L/R when Assoc is fed */
 			assert_int(out->l_silent_frame_count, <, 48);
 
@@ -769,6 +780,10 @@ test_ms12_assoc_disappearing(const MunitParameter params[],
 	/* play */
 	assert_int(0, ==, ffmpeg_src_thread_start(src));
 	assert_int(0, ==, ffmpeg_src_thread_join(src));
+
+	/* drain output */
+	qd_session_wait_eos(session, QD_INPUT_MAIN);
+	qd_session_wait_eos(session, QD_INPUT_ASSOC);
 
 	/* verify we've seen at least 2s of silence in left and right channels,
 	 * which is expected while Assoc has "disappeared" */
@@ -927,6 +942,10 @@ test_ms12_main2_mix(const MunitParameter params[],
 	assert_int(0, ==, ffmpeg_src_thread_join(src_main));
 	assert_int(0, ==, ffmpeg_src_thread_join(src_main2));
 
+	/* drain output */
+	qd_session_wait_eos(session, QD_INPUT_MAIN);
+	qd_session_wait_eos(session, QD_INPUT_MAIN2);
+
 	ffmpeg_src_destroy(src_main);
 	ffmpeg_src_destroy(src_main2);
 	qd_session_destroy(session);
@@ -1066,6 +1085,9 @@ test_ms12_stereo_downmix(const MunitParameter params[],
 	/* play */
 	assert_int(0, ==, ffmpeg_src_thread_start(src));
 	assert_int(0, ==, ffmpeg_src_thread_join(src));
+
+	/* drain output */
+	qd_session_wait_eos(session, QD_INPUT_MAIN);
 
 	ffmpeg_src_destroy(src);
 	qd_session_destroy(session);
@@ -1213,6 +1235,9 @@ test_ms12_drc(const MunitParameter params[], void *user_data_or_fixture)
 	/* play */
 	assert_int(0, ==, ffmpeg_src_thread_start(src));
 	assert_int(0, ==, ffmpeg_src_thread_join(src));
+
+	/* drain output */
+	qd_session_wait_eos(session, QD_INPUT_MAIN);
 
 	ffmpeg_src_destroy(src);
 	qd_session_destroy(session);
