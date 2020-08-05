@@ -2093,20 +2093,28 @@ static void *
 ffmpeg_src_thread_func(void *userdata)
 {
 	struct ffmpeg_src *src = userdata;
-	int ret;
+	intptr_t ret = 0;
 
 	while (!src->terminated) {
 		ret = ffmpeg_src_read_frame(src);
 		if (ret == AVERROR_EOF) {
 			info(" in: EOS");
+			ret = 0;
 			break;
 		}
 
-		if (ret < 0)
-			return (void *)1;
+		if (ret < 0) {
+			ret = 1;
+			break;
+		}
 	}
 
-	return 0;
+	for (int i = 0; i < src->n_streams; i++) {
+		qd_input_send_eos(src->streams[i].input);
+		qd_input_stop(src->streams[i].input);
+	}
+
+	return (void *)ret;
 }
 
 int

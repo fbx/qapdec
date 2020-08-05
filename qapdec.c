@@ -600,12 +600,8 @@ again:
 	if (src[QD_INPUT_MAIN] && !decode_err) {
 		struct ffmpeg_src *psrc = src[QD_INPUT_MAIN];
 
-		/* send EOS and stop all streams */
-		for (int i = 0; i < QD_MAX_STREAMS; i++) {
-			if (!psrc->streams[i].input)
-				continue;
-			qd_input_send_eos(psrc->streams[i].input);
-			qd_input_stop(psrc->streams[i].input);
+		/* wait EOS */
+		for (int i = 0; i < psrc->n_streams; i++) {
 			qd_session_wait_eos(g_session,
 					    psrc->streams[i].input->id);
 		}
