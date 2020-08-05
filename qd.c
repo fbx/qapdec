@@ -1052,12 +1052,12 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 
 	output->pts = pts;
 
+	output_write_buffer(output, &buffer->common_params);
+
 	if (session->output_cb_func) {
 		session->output_cb_func(output, buffer,
 					session->output_cb_data);
 	}
-
-	output_write_buffer(output, &buffer->common_params);
 }
 
 static void
