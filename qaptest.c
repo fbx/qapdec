@@ -44,8 +44,7 @@ static inline bool
 int16_is_silence(int16_t *samples, size_t count)
 {
 	for (size_t i = 0; i < count; i++) {
-		if (samples[i] < INT16_MIN * 0.0005 ||
-		    samples[i] > INT16_MAX * 0.0005)
+		if (samples[i] > 15 || samples[i] < -15)
 			return false;
 	}
 	return true;
@@ -1323,7 +1322,7 @@ pause_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
 
 		/* check if silence was detected */
 		for (int i = 0; i < 2; i++) {
-			bool silent = ctx->lr_silent_samples[i] > 48;
+			bool silent = ctx->lr_silent_samples[i] > 1;
 			if (silent == ctx->lr_silent[i])
 				continue;
 
