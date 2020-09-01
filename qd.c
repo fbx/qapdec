@@ -1406,6 +1406,8 @@ qd_input_get_buffer_size(struct qd_input *input)
 		return 0;
 	}
 
+	assert(reply_size == sizeof (buffer_size));
+
 	return buffer_size;
 }
 
@@ -1478,7 +1480,7 @@ int
 qd_input_get_latency(struct qd_input *input)
 {
 	uint32_t param_id = MS12_STREAM_GET_LATENCY;
-	int32_t latency = 0;
+	int64_t latency = 0;
 	uint32_t reply_size = sizeof (latency);
 	int ret;
 
