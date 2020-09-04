@@ -22,6 +22,7 @@ enum kbd_command {
 	KBD_PLAYPAUSE,
 	KBD_STOP,
 	KBD_BLOCK,
+	KBD_FLUSH,
 };
 
 static int kbd_ev = -1;
@@ -92,6 +93,9 @@ static void kbd_handle_key(char key[3])
 		case KBD_BLOCK:
 			qd_input_block(input, !input->blocked);
 			break;
+		case KBD_FLUSH:
+			qd_input_flush(input);
+			break;
 		default:
 			break;
 		}
@@ -108,6 +112,10 @@ static void kbd_handle_key(char key[3])
 	} else if (key[0] == 'b') {
 		kbd_pending_command = KBD_BLOCK;
 		notice("Enter stream number to Block/Unblock");
+
+	} else if (key[0] == 'f') {
+		kbd_pending_command = KBD_FLUSH;
+		notice("Enter stream number to Flush");
 
 	} else if (key[0] == 'c') {
 		char kvpairs[32];
