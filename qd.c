@@ -1341,6 +1341,8 @@ qd_input_flush(struct qd_input *input)
 {
 	int ret;
 
+	pthread_mutex_lock(&input->lock);
+
 	info(" in: %s: flush", input->name);
 
 	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_FLUSH,
@@ -1349,6 +1351,14 @@ qd_input_flush(struct qd_input *input)
 		err("QAP_SESSION_CMD_FLUSH command failed");
 		return 1;
 	}
+
+	info(" in: %s: flush done", input->name);
+
+	input->buffer_full = false;
+	pthread_cond_signal(&input->cond);
+	pthread_mutex_unlock(&input->lock);
+
+	info(" in: %s: flush signaled", input->name);
 
 	return 0;
 }
