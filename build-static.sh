@@ -26,13 +26,11 @@ p2() {
     echo "[1;34m * [1;37m$*[0m"
 }
 
-if [ ! -d "$SYSROOT" ]; then
+if [ ! -d "$SYSROOT" -a ! -d "$BUILDROOT" ]; then
     die "You must set the SYSROOT environment variable to point to an APQ8098 LE sysroot directory"
 fi
 
 D="$SCRIPT_DIR/build"
-
-CC="$CC --sysroot $SYSROOT"
 
 if [ -n "$CLEAN" ]; then
     p2 clean
@@ -45,6 +43,16 @@ mkdir -p "$D/build"
 mkdir -p "$D/staging"
 
 CFLAGS="$CFLAGS -isystem $D/staging/usr/include"
+
+if [ -n "$SYSROOT" ]; then
+    CC="$CC --sysroot $SYSROOT"
+elif [ -n "$BUILDROOT" ]; then
+    CFLAGS="$CFLAGS -isystem $BUILDROOT/usr/include"
+    LDFLAGS="$LDFLAGS -Wl,-Y,$BUILDROOT/usr/lib64"
+    LDFLAGS="$LDFLAGS -Wl,-rpath-link,$BUILDROOT/usr/lib64"
+    SYSROOT="$BUILDROOT"
+fi
+
 export PATH="$D/host/bin:$PATH"
 export PKG_CONFIG_SYSROOT="$SYSROOT"
 export PKG_CONFIG_LIBDIR="$D/staging/usr/lib/pkgconfig:$D/staging/usr/share/pkgconfig:$SYSROOT/usr/lib64/pkgconfig"
@@ -85,7 +93,7 @@ if [ ! -e Makefile ]; then
         --disable-fortran \
         --disable-openmp \
         --disable-threads \
-        CC="$CC" CFLAGS="$CFLAGS" \
+        CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
         PKG_CONFIG_LIBDIR="$D/staging/usr/lib/pkgconfig"
 fi
 
@@ -127,6 +135,7 @@ if [ ! -e Makefile ]; then
         --cross-prefix="$CROSS" \
         --cc="$CC" \
         --extra-cflags="$CFLAGS" \
+        --extra-ldflags="$LDFLAGS" \
         --pkg-config=pkg-config \
         --disable-doc \
         --disable-htmlpages \
@@ -192,7 +201,7 @@ p "QAPDEC"
 
 cd "$SCRIPT_DIR"
 
-make -j"$MAKE_JOBS" CROSS="$CROSS" CC="$CC" CFLAGS="$CFLAGS"
+make -j"$MAKE_JOBS" CROSS="$CROSS" CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
 
 # remove this if debugging is needed
 ${CROSS}strip qapdec
