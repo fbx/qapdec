@@ -1592,8 +1592,6 @@ qd_input_create(struct qd_session *session, enum qd_input_id id,
 	if (qd_input_start(input))
 		goto fail;
 
-	qd_input_flush(input);
-
 	return input;
 
 fail:
