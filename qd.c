@@ -989,13 +989,14 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 	struct qd_output *output = qd_session_get_output(session, id);
 	uint64_t pts;
 
-	dbg("out: %s: pcm buffer size=%u pts=%" PRIi64
-	    " duration=%lu last_diff=%" PRIi64,
+	dbg("out: %s: pcm buffer size=%u pts=%" PRIu64
+	    " duration=%lu last_pts=%" PRIu64 " last_diff=%" PRIi64,
 	    output->name,
 	    buffer->common_params.size, buffer->common_params.timestamp,
 	    buffer->common_params.size * 1000000UL /
 	    (output->config.channels * output->config.bit_width / 8) /
 	    output->config.sample_rate,
+	    output->last_ts,
 	    buffer->common_params.timestamp - output->last_ts);
 
 	if (qd_format_is_pcm(output->config.format)) {
@@ -1048,7 +1049,8 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 		return;
 	}
 
-	dbg("out: %s: render buffer", output->name);
+	dbg("out: %s: render buffer, output time=%" PRIu64, output->name,
+	    output->pts);
 
 	output->pts = pts;
 
