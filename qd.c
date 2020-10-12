@@ -1528,6 +1528,7 @@ qd_input_create(struct qd_session *session, enum qd_input_id id,
 		qap_module_config_t *qap_config)
 {
 	struct qd_input *input;
+	uint32_t buffer_size;
 
 	input = calloc(1, sizeof *input);
 	if (!input)
@@ -1551,15 +1552,13 @@ qd_input_create(struct qd_session *session, enum qd_input_id id,
 		goto fail;
 	}
 
+	buffer_size = qd_input_get_buffer_size(input);
+	if (buffer_size > 0) {
+		info(" in: %s: default buffer size %u bytes",
+		     input->name, buffer_size);
+	}
+
 	if (qd_format_is_pcm(qap_config->format)) {
-		uint32_t buffer_size;
-
-		buffer_size = qd_input_get_buffer_size(input);
-		if (buffer_size > 0) {
-			info(" in: %s: default buffer size %u bytes",
-			     input->name, buffer_size);
-		}
-
 		if (session->buffer_size_ms > 0) {
 			buffer_size = qap_config->sample_rate *
 				qap_config->channels *
@@ -1569,9 +1568,13 @@ qd_input_create(struct qd_session *session, enum qd_input_id id,
 			if (qd_input_set_buffer_size(input, buffer_size))
 				goto fail;
 		}
-
-		input->buffer_size = buffer_size;
+	} else {
+		buffer_size = 4 * 1024;
+		if (qd_input_set_buffer_size(input, buffer_size))
+			goto fail;
 	}
+
+	input->buffer_size = buffer_size;
 
 	info(" in: %s: latency %dms", input->name,
 	     qd_input_get_latency(input));
