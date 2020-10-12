@@ -1381,7 +1381,7 @@ qd_input_block(struct qd_input *input, bool block)
 uint32_t
 qd_input_get_buffer_size(struct qd_input *input)
 {
-	uint32_t param_id = MS12_STREAM_GET_PCM_INPUT_BUF_SIZE;
+	uint32_t param_id = MS12_STREAM_GET_INPUT_BUF_SIZE;
 	uint32_t buffer_size = 0;
 	uint32_t reply_size = sizeof (buffer_size);
 	int ret;
@@ -1402,7 +1402,7 @@ qd_input_get_buffer_size(struct qd_input *input)
 int
 qd_input_set_buffer_size(struct qd_input *input, uint32_t buffer_size)
 {
-	uint32_t params[] = { MS12_STREAM_SET_PCM_INPUT_BUF_SIZE, buffer_size };
+	uint32_t params[] = { MS12_STREAM_SET_INPUT_BUF_SIZE, buffer_size };
 	int ret;
 
 	info(" in: %s: set buffer size %u bytes", input->name, buffer_size);
