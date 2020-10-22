@@ -2304,10 +2304,20 @@ void qd_session_ignore_timestamps(struct qd_session *session, bool ignore)
 }
 
 void
+qd_session_terminate(struct qd_session *session)
+{
+	info("terminate session");
+	pthread_mutex_lock(&session->lock);
+	session->terminated = true;
+	pthread_cond_signal(&session->cond);
+	pthread_mutex_unlock(&session->lock);
+}
+
+void
 qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id)
 {
 	pthread_mutex_lock(&session->lock);
-	while (1) {
+	while (!session->terminated) {
 		bool done;
 		switch (input_id) {
 		case QD_INPUT_MAIN:

@@ -220,6 +220,8 @@ static void handle_quit(int sig)
 {
 	quit = true;
 
+	qd_session_terminate(g_session);
+
 	for (int i = 0; i < QD_MAX_INPUTS; i++) {
 		struct ffmpeg_src *src = g_ffmpeg_sources[i];
 		if (src != NULL)

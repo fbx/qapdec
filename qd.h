@@ -194,6 +194,7 @@ int qd_session_configure_outputs(struct qd_session *session,
 				 const enum qd_output_id *outputs);
 void qd_session_set_dump_path(struct qd_session *session, const char *path);
 void qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id);
+void qd_session_terminate(struct qd_session *session);
 struct qd_output *qd_session_get_output(struct qd_session *session,
 					enum qd_output_id id);
 void qd_session_set_output_cb(struct qd_session *session, qd_output_func_t func,
