@@ -1378,30 +1378,6 @@ qd_input_block(struct qd_input *input, bool block)
 	return 0;
 }
 
-int
-qd_input_send_eos(struct qd_input *input)
-{
-	qap_audio_buffer_t qap_buffer;
-	int ret;
-
-	if (input->state == QD_INPUT_STATE_STOPPED)
-		return 0;
-
-	memset(&qap_buffer, 0, sizeof (qap_buffer));
-	qap_buffer.buffer_parms.input_buf_params.flags = QAP_BUFFER_EOS;
-
-	ret = qap_module_process(input->module, &qap_buffer);
-	if (ret) {
-		err("%s: failed to send eos, err %d",
-		    input->name, ret);
-		return 1;
-	}
-
-	info(" in: %s: sent EOS", input->name);
-
-	return 0;
-}
-
 uint32_t
 qd_input_get_buffer_size(struct qd_input *input)
 {
@@ -1522,9 +1498,12 @@ qd_input_terminate(struct qd_input *input)
 void
 qd_input_destroy(struct qd_input *input)
 {
+	struct qd_session *session;
+
 	if (!input)
 		return;
 
+	qd_input_stop(input);
 	qd_input_flush(input);
 
 	if (input->module && qap_module_deinit(input->module))
@@ -1532,6 +1511,12 @@ qd_input_destroy(struct qd_input *input)
 
 	if (input->avmux)
 		avformat_free_context(input->avmux);
+
+	session = input->session;
+
+	pthread_mutex_lock(&session->lock);
+	session->eos_inputs &= ~(1 << input->id);
+	pthread_mutex_unlock(&session->lock);
 
 	pthread_cond_destroy(&input->cond);
 	pthread_mutex_destroy(&input->lock);
@@ -2142,10 +2127,8 @@ ffmpeg_src_thread_func(void *userdata)
 		}
 	}
 
-	for (int i = 0; i < src->n_streams; i++) {
-		qd_input_send_eos(src->streams[i].input);
+	for (int i = 0; i < src->n_streams; i++)
 		qd_input_stop(src->streams[i].input);
-	}
 
 	return (void *)ret;
 }
