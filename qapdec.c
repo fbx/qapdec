@@ -507,41 +507,43 @@ again:
 		src_duration = 0;
 	}
 
-	/* load QAP library */
-	if (!avstream) {
-		module = QD_MODULE_DOLBY_MS12;
-	} else {
-		switch (avstream->codecpar->codec_id) {
-		case AV_CODEC_ID_AC3:
-		case AV_CODEC_ID_EAC3:
-		case AV_CODEC_ID_AAC:
-		case AV_CODEC_ID_AAC_LATM:
-		case AV_CODEC_ID_PCM_S16LE:
-		case AV_CODEC_ID_PCM_S24LE:
-		case AV_CODEC_ID_PCM_S32LE:
+	if (!g_session) {
+		/* load QAP library */
+		if (!avstream) {
 			module = QD_MODULE_DOLBY_MS12;
-			break;
-		case AV_CODEC_ID_DTS:
-			module = QD_MODULE_DTS_M8;
-			break;
-		default:
-			err("cannot decode %s format",
-			    avcodec_get_name(avstream->codecpar->codec_id));
-			return 1;
+		} else {
+			switch (avstream->codecpar->codec_id) {
+			case AV_CODEC_ID_AC3:
+			case AV_CODEC_ID_EAC3:
+			case AV_CODEC_ID_AAC:
+			case AV_CODEC_ID_AAC_LATM:
+			case AV_CODEC_ID_PCM_S16LE:
+			case AV_CODEC_ID_PCM_S24LE:
+			case AV_CODEC_ID_PCM_S32LE:
+				module = QD_MODULE_DOLBY_MS12;
+				break;
+			case AV_CODEC_ID_DTS:
+				module = QD_MODULE_DTS_M8;
+				break;
+			default:
+				err("cannot decode %s format",
+				    avcodec_get_name(avstream->codecpar->codec_id));
+				return 1;
+			}
 		}
+
+		g_session = qd_session_create(module, qap_session_type);
+		if (!g_session)
+			return 1;
+
+		qd_session_configure_outputs(g_session, num_outputs, outputs);
+		qd_session_set_buffer_size_ms(g_session, 32);
+		qd_session_set_output_discard_ms(g_session, discard_duration);
+		qd_session_set_realtime(g_session, render_realtime);
+		qd_session_set_dump_path(g_session, output_dir);
+		if (kvpairs && qd_session_set_kvpairs(g_session, kvpairs))
+			return 1;
 	}
-
-	g_session = qd_session_create(module, qap_session_type);
-	if (!g_session)
-		return 1;
-
-	qd_session_configure_outputs(g_session, num_outputs, outputs);
-	qd_session_set_buffer_size_ms(g_session, 32);
-	qd_session_set_output_discard_ms(g_session, discard_duration);
-	qd_session_set_realtime(g_session, render_realtime);
-	qd_session_set_dump_path(g_session, output_dir);
-	if (kvpairs && qd_session_set_kvpairs(g_session, kvpairs))
-		return 1;
 
 	start_time = qd_get_time();
 
@@ -646,6 +648,9 @@ again:
 		     frames * 1000000 / duration);
 	}
 
+	if (!quit && --loops > 0)
+		goto again;
+
 	qd_session_destroy(g_session);
 	g_session = NULL;
 
@@ -664,9 +669,6 @@ again:
 			       cpu_time / QD_SECOND, cpu_time % QD_SECOND / QD_MSECOND);
 		}
 	}
-
-	if (!quit && --loops > 0)
-		goto again;
 
 	if (kbd_enable) {
 		handle_quit(SIGTERM);
