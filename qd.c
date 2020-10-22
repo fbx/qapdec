@@ -1343,8 +1343,6 @@ qd_input_flush(struct qd_input *input)
 {
 	int ret;
 
-	pthread_mutex_lock(&input->lock);
-
 	info(" in: %s: flush", input->name);
 
 	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_FLUSH,
@@ -1356,11 +1354,14 @@ qd_input_flush(struct qd_input *input)
 
 	info(" in: %s: flush done", input->name);
 
+#if 0
+	// not needed, but adding this works around SEND_INPUT_BUFFER
+	// not sent after flush
+	pthread_mutex_lock(&input->lock);
 	input->buffer_full = false;
 	pthread_cond_signal(&input->cond);
 	pthread_mutex_unlock(&input->lock);
-
-	info(" in: %s: flush signaled", input->name);
+#endif
 
 	return 0;
 }
@@ -2154,9 +2155,6 @@ ffmpeg_src_thread_func(void *userdata)
 		}
 	}
 
-	for (int i = 0; i < src->n_streams; i++)
-		qd_input_stop(src->streams[i].input);
-
 	return (void *)ret;
 }
 
@@ -2180,6 +2178,9 @@ ffmpeg_src_thread_join(struct ffmpeg_src *src)
 	void *ret = (void *)1;
 
 	pthread_join(src->tid, &ret);
+
+	for (int i = 0; i < src->n_streams; i++)
+		qd_input_stop(src->streams[i].input);
 
 	return (intptr_t)ret;
 }
@@ -2363,6 +2364,7 @@ qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id)
 		if (done)
 			break;
 
+		info(" in %s: wait eos", qd_input_id_to_str(input_id));
 		pthread_cond_wait(&session->cond, &session->lock);
 	}
 	pthread_mutex_unlock(&session->lock);
