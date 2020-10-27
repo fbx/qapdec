@@ -647,13 +647,14 @@ test_ms12_assoc_mix(const MunitParameter params[],
 	/* play */
 	assert_int(0, ==, ffmpeg_src_thread_start(src_main));
 	assert_int(0, ==, ffmpeg_src_thread_start(src_assoc));
-	assert_int(0, ==, ffmpeg_src_thread_join(src_main));
-	assert_int(0, ==, ffmpeg_src_thread_join(src_assoc));
 
-	/* drain output */
+	assert_int(0, ==, ffmpeg_src_thread_join(src_main));
 	qd_session_wait_eos(session, QD_INPUT_MAIN);
+
+	ffmpeg_src_thread_stop(src_assoc);
 	qd_session_wait_eos(session, QD_INPUT_ASSOC);
 
+	/* drain output */
 	ffmpeg_src_destroy(src_main);
 	ffmpeg_src_destroy(src_assoc);
 	qd_session_destroy(session);
