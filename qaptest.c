@@ -218,7 +218,19 @@ static char *parm_ms12_outputs_pcm_stereo[] = {
 static void *
 pretest_ms12(const MunitParameter params[], void* user_data)
 {
-	qd_debug_level = 2;
+	switch (munit_log_level_visible) {
+	case MUNIT_LOG_ERROR:
+	case MUNIT_LOG_WARNING:
+		qd_debug_level = 1;
+		break;
+	case MUNIT_LOG_INFO:
+		qd_debug_level = 2;
+		break;
+	case MUNIT_LOG_DEBUG:
+		qd_debug_level = 3;
+		break;
+	}
+
 	qd_init();
 
 	return NULL;
