@@ -707,14 +707,14 @@ assoc_disappearing_output_cb(struct qd_output *output, qap_audio_buffer_t *buffe
 		else
 			out->r_silent_frame_count = 0;
 
-		if (output->pts < 10 * QD_SECOND ||
-		    (output->pts > 21 * QD_SECOND &&
-		     output->pts < 29.9 * QD_SECOND)) {
+		if (output->pts < 9.9 * QD_SECOND ||
+		    (output->pts > 20.9 * QD_SECOND &&
+		     output->pts < 29.8 * QD_SECOND)) {
 			/* silence is not allowed in L/R when Assoc is fed */
 			assert_int(out->l_silent_frame_count, <, 48);
 
 			/* ignore aac cert file error at ~24s */
-			if (output->pts < 24 * QD_SECOND &&
+			if (output->pts < 23 * QD_SECOND &&
 			    output->pts > 25 * QD_SECOND)
 				assert_int(out->r_silent_frame_count, <, 48);
 		} else {

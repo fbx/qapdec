@@ -1052,14 +1052,14 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 	dbg("out: %s: render buffer, output time=%" PRIu64, output->name,
 	    output->pts);
 
-	output->pts = pts;
-
 	output_write_buffer(output, &buffer->common_params);
 
 	if (session->output_cb_func) {
 		session->output_cb_func(output, buffer,
 					session->output_cb_data);
 	}
+
+	output->pts = pts;
 }
 
 static void
