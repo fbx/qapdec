@@ -25,6 +25,23 @@ resolve_test_file(const char *filename)
 	return buf;
 }
 
+struct input_desc {
+	const char *alias;
+	enum qd_input_id input_id;
+	const char *format;
+	const char *url;
+};
+
+static const struct input_desc *
+find_input(const struct input_desc *inputs, const char *alias)
+{
+	for (const struct input_desc *d = inputs; d->alias; d++) {
+		if (!strcmp(d->alias, alias))
+			return d;
+	}
+	return NULL;
+}
+
 struct file_alias {
 	const char *alias;
 	const char *filename;
@@ -1684,6 +1701,240 @@ static MunitParameterEnum parms_ms12_output_reconfig[] = {
 };
 
 /*
+ * MS12: test output latency with empty and full input buffers
+ *
+ * Input files will render a stereo 997Hz tone at -20dBFS.
+ *
+ * Verify the number of silence frames inserted before the tone is reproduced
+ * on the output is not too high, on all inputs.
+ */
+
+struct latency_out {
+	int state;
+	int silent_frames_count;
+};
+
+struct latency_ctx {
+	bool written_input_frame;
+	pthread_mutex_t output_lock;
+	pthread_cond_t output_cond;
+	struct latency_out outputs[QD_MAX_OUTPUTS];
+};
+
+static bool
+latency_outputs_prerolled(struct qd_session *session)
+{
+	/*
+	 * consider pipeline prerolled when we've seen at least 4 output frames
+	 * of 32ms on all enabled outputs
+	 */
+	for (size_t i = 0; i < QD_MAX_OUTPUTS; i++) {
+		if (session->outputs[i].enabled &&
+		    session->outputs[i].pts < 4 * 32 * QD_MSECOND)
+			return false;
+	}
+	return true;
+}
+
+static void
+latency_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
+			 void *userdata)
+{
+	struct latency_ctx *ctx = userdata;
+	struct latency_out *out = &ctx->outputs[output->id];
+	size_t frame_size;
+
+	if (!qd_format_is_pcm(output->config.format)) {
+		/* skip encoded output */
+		out->state = 2;
+		return;
+	}
+
+	/* check output config */
+	assert_int(output->config.sample_rate, ==, 48000);
+	assert_int(output->config.bit_width, ==, 16);
+	assert_int(output->config.channels, >=, 2);
+
+	frame_size = output->config.channels * output->config.bit_width / 8;
+	assert_int(buffer->common_params.size % frame_size, ==, 0);
+
+	pthread_mutex_lock(&ctx->output_lock);
+	if (!latency_outputs_prerolled(output->session)) {
+		pthread_mutex_unlock(&ctx->output_lock);
+		return;
+	}
+
+	pthread_cond_signal(&ctx->output_cond);
+
+	while (!ctx->written_input_frame)
+		pthread_cond_wait(&ctx->output_cond, &ctx->output_lock);
+	pthread_mutex_unlock(&ctx->output_lock);
+
+	for (size_t i = 0; i < buffer->common_params.size; i += frame_size) {
+		int16_t *frame = buffer->common_params.data + i;
+		bool silent = int16_is_silence(frame, output->config.channels);
+
+		switch (out->state) {
+		case 0: // init
+			assert_true(silent);
+			out->state = 1;
+			info("test/output %s: ts=%" PRIu64 " initial silence detected",
+			     output->name, output->pts);
+			break;
+		case 1: // silent
+			if (silent) {
+				out->silent_frames_count++;
+			} else {
+				out->state = 2;
+				info("test/output %s: ts=%" PRIu64 " output noisy after %d frames",
+				     output->name, output->pts, out->silent_frames_count);
+			}
+			break;
+		case 2: // active
+			break;
+		}
+	}
+}
+
+static const struct input_desc latency_inputs[] = {
+	{ "sys", QD_INPUT_SYS_SOUND, "lavfi",
+		"sine=sample_rate=48000:frequency=997" },
+	{ "app", QD_INPUT_APP_SOUND, "lavfi",
+		"sine=sample_rate=48000:frequency=997" },
+	{ "ott", QD_INPUT_OTT_SOUND, "lavfi",
+		"sine=sample_rate=48000:frequency=997" },
+	{ "ext", QD_INPUT_EXT_PCM, "lavfi",
+		"sine=sample_rate=48000:frequency=997" },
+	{ "ddp", QD_INPUT_MAIN, NULL,
+		"Elementary_Streams/Reference_Level/Ref_997_200_48k_20dB_ddp.ec3" },
+	{ "aac_adts", QD_INPUT_MAIN, NULL,
+		"Elementary_Streams/Reference_Level/Ref_997_200_48k_20dB_heaac.adts" },
+	{ "aac_loas", QD_INPUT_MAIN, NULL,
+		"Elementary_Streams/Reference_Level/Ref_997_200_48k_20dB_heaac.loas" },
+	{ },
+};
+
+static MunitResult
+test_ms12_latency(const MunitParameter params[], void *user_data_or_fixture)
+{
+	struct qd_session *session;
+	struct qd_input *input;
+	struct ffmpeg_src *src;
+	const struct input_desc *input_desc;
+	const char *url;
+	const char *v;
+	struct latency_ctx ctx = {};
+	int latency;
+
+	pthread_mutex_init(&ctx.output_lock, NULL);
+	pthread_cond_init(&ctx.output_cond, NULL);
+
+	if (!(session = setup_ms12_session(params)))
+		return MUNIT_SKIP;
+
+	qd_session_set_output_cb(session, latency_output_cb, &ctx);
+	qd_session_set_buffer_size_ms(session, 32);
+
+	/* create main input */
+	v = munit_parameters_get(params, "f");
+	if (!(input_desc = find_input(latency_inputs, v)))
+		return MUNIT_ERROR;
+
+	if (input_desc->format && !strcmp(input_desc->format, "lavfi"))
+		url = input_desc->url;
+	else
+		url = resolve_test_file(input_desc->url);
+
+	assert_not_null((src = ffmpeg_src_create(url, input_desc->format)));
+	assert_not_null((input = ffmpeg_src_add_input(src, 0, session,
+						      input_desc->input_id)));
+
+	latency = qd_input_get_latency(src->streams[0].input);
+
+	/* play starting in non-silent data */
+	if (!input_desc->format || strcmp(input_desc->format, "lavfi") != 0)
+		assert_int(0, ==, ffmpeg_src_seek(src, 14000));
+
+	pthread_mutex_lock(&ctx.output_lock);
+
+	/* feed data to kick off the scheduler */
+	ffmpeg_src_read_frame(src);
+
+	/* wait for some silence frames on enabled outputs */
+	while (!latency_outputs_prerolled(session))
+		pthread_cond_wait(&ctx.output_cond, &ctx.output_lock);
+
+	/* feed some non-silent frames of data */
+	ffmpeg_src_read_frame(src);
+	ctx.written_input_frame = true;
+	pthread_cond_signal(&ctx.output_cond);
+	pthread_mutex_unlock(&ctx.output_lock);
+
+	/* feed some more data if needed, but unlocked as we block waiting for
+	 * the input buffer to be consumed */
+	for (int i = 0; i < 3; i++)
+		ffmpeg_src_read_frame(src);
+
+	pthread_mutex_lock(&ctx.output_lock);
+
+	/* wait for all outputs to notify their latency */
+	while (1) {
+		bool done = true;
+
+		for (size_t i = 0; i < QD_MAX_OUTPUTS; i++) {
+			if (session->outputs[i].enabled &&
+			    ctx.outputs[i].state != 2)
+				done = false;
+		}
+
+		if (done)
+			break;
+
+		pthread_cond_wait(&ctx.output_cond, &ctx.output_lock);
+	}
+
+	pthread_mutex_unlock(&ctx.output_lock);
+
+	/* verify measured latency is close to latency reported by QAP */
+	for (size_t i = 0; i < QD_MAX_OUTPUTS; i++) {
+		struct qd_output *output = &session->outputs[i];
+		int measured_latency;
+
+		if (!output->enabled || !qd_format_is_pcm(output->config.format))
+			continue;
+
+		measured_latency = ctx.outputs[i].silent_frames_count *
+			1000 / output->config.sample_rate;
+
+		info("out %s: silent_frames=%d latency=%d measured=%d",
+		     output->name, ctx.outputs[i].silent_frames_count,
+		     latency, measured_latency);
+
+		munit_assert_int(latency + 16, >=, measured_latency);
+		munit_assert_int(latency - 16, <=, measured_latency);
+	}
+
+	ffmpeg_src_destroy(src);
+	qd_session_destroy(session);
+
+	pthread_cond_destroy(&ctx.output_cond);
+	pthread_mutex_destroy(&ctx.output_lock);
+
+	return MUNIT_OK;
+}
+
+static char *parm_ms12_files_latency[] = {
+	"sys", "app", "ott", "ext", "ddp", "aac_adts", "aac_loas", NULL
+};
+
+static MunitParameterEnum parms_ms12_latency[] = {
+	{ "t", parm_ms12_sessions_ott_only },
+	{ "o", parm_ms12_outputs_all },
+	{ "f", parm_ms12_files_latency },
+	{ NULL, NULL },
+};
+
+/*
  * MS12 test suite
  */
 
@@ -1720,6 +1971,10 @@ static MunitTest ms12_tests[] = {
 	  test_ms12_output_reconfig,
 	  pretest_ms12, NULL,
 	  MUNIT_TEST_OPTION_NONE, parms_ms12_output_reconfig },
+	{ "/ms12/latency",
+	  test_ms12_latency,
+	  pretest_ms12, NULL,
+	  MUNIT_TEST_OPTION_NONE, parms_ms12_latency },
 	{ },
 };
 
