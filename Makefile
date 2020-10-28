@@ -57,7 +57,7 @@ qaptest_pkgs = fftw3
 qaptest_pkg_cflags = $(shell $(PKG_CONFIG) --static --cflags $(qaptest_pkgs))
 qaptest_pkg_libs = $(shell $(PKG_CONFIG) --static --libs $(qaptest_pkgs))
 
-qaptest_objs = qaptest.o munit/munit.o
+qaptest_objs = qaptest.o munit.o
 qaptest_cppflags = -D_DEFAULT_SOURCE $(CPPFLAGS)
 qaptest_cppflags += -DMUNIT_TEST_TIME_FORMAT='"0.3f"' -DMUNIT_TEST_NAME_LEN=47
 qaptest_cflags = -std=gnu11 -Wall -pthread $(qd_includes) $(qaptest_pkg_cflags) $(CFLAGS)

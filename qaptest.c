@@ -7,7 +7,7 @@
 #include <complex.h>
 #include <fftw3.h>
 #define MUNIT_ENABLE_ASSERT_ALIASES
-#include "munit/munit.h"
+#include "munit.h"
 
 #include "qd.h"
 
