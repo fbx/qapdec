@@ -1702,6 +1702,159 @@ static MunitParameterEnum parms_ms12_output_reconfig[] = {
 };
 
 /*
+ * MS12: test flushing
+ */
+
+struct flush_ctx {
+	struct peak_analyzer pa[2];
+};
+
+static void
+flush_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
+		void *userdata)
+{
+	struct flush_ctx *ctx = userdata;
+	size_t frame_size;
+
+	/* check output config */
+	assert_int(output->config.sample_rate, ==, 48000);
+	assert_int(output->config.bit_width, ==, 16);
+
+	frame_size = output->config.channels * output->config.bit_width / 8;
+	assert_int(buffer->common_params.size % frame_size, ==, 0);
+
+	/* feed left and right channel data */
+	for (size_t i = 0; i < buffer->common_params.size; i += frame_size) {
+		int16_t *frame = buffer->common_params.data + i;
+
+		if (!int16_is_silence(frame, 2)) {
+			peak_analyzer_add_samples(&ctx->pa[0], frame + 0, 1);
+			peak_analyzer_add_samples(&ctx->pa[1], frame + 1, 1);
+		}
+	}
+
+	for (int i = 0; i < 2; i++) {
+		double freq, gain;
+
+		/* fill window before running fft and analyzing data */
+		if (ctx->pa[i].n_samples != ctx->pa[i].max_samples)
+			continue;
+
+		/* verify peak frequency and gain are correct */
+		assert_true(peak_analyzer_run(&ctx->pa[i], &freq, &gain));
+
+		/* check peak frequency */
+		assert_double(freq, >=, 992);
+		assert_double(freq, <=, 1002);
+
+		/* reset window */
+		ctx->pa[i].n_samples = 0;
+	}
+}
+
+static const struct file_alias flush_files[] = {
+	{ "ddp", "Elementary_Streams/Reference_Level/Ref_997_200_48k_20dB_ddp.ec3" },
+	{ "aac_adts", "Elementary_Streams/Reference_Level/Ref_997_200_48k_20dB_heaac.adts" },
+	{ "aac_loas", "Elementary_Streams/Reference_Level/Ref_997_200_48k_20dB_heaac.loas" },
+	{ NULL, NULL }
+};
+
+static MunitResult
+test_ms12_flush(const MunitParameter params[],
+		    void *user_data_or_fixture)
+{
+	struct qd_session *session;
+	struct qd_input *input;
+	struct ffmpeg_src *src;
+	const char *v, *f;
+	struct flush_ctx ctx;
+
+	if (!(session = setup_ms12_session(params)))
+		return MUNIT_SKIP;
+
+	qd_session_set_output_cb(session, flush_output_cb, &ctx);
+	qd_session_set_realtime(session, true);
+
+	for (int i = 0; i < 2; i++)
+		peak_analyzer_init(&ctx.pa[i], 48000, 48000, WIN_RECT);
+
+	/* create main input */
+	v = munit_parameters_get(params, "f");
+	if (!(f = find_filename(flush_files, v)))
+		return MUNIT_ERROR;
+
+	assert_not_null((src = ffmpeg_src_create(f, NULL)));
+	assert_not_null((input = ffmpeg_src_add_input(src, 0, session,
+						      QD_INPUT_MAIN)));
+
+	/* skip silence and ref tone at beginning of input files */
+	assert_int(0, ==, ffmpeg_src_seek(src, 25000));
+
+	/* skip audio ramping up */
+	qd_session_set_output_discard_ms(session, 500);
+
+	/* play */
+	assert_int(0, ==, ffmpeg_src_thread_start(src));
+
+	usleep(1000000);
+
+	assert_int(0, ==, qd_input_flush(input));
+
+	usleep(1000000);
+
+	assert_int(0, ==, qd_input_flush(input));
+	assert_int(0, ==, qd_input_flush(input));
+
+	usleep(1000000);
+
+	assert_int(0, ==, qd_input_pause(input));
+	assert_int(0, ==, qd_input_flush(input));
+	assert_int(0, ==, qd_input_start(input));
+
+	usleep(1000000);
+
+	assert_int(0, ==, qd_input_pause(input));
+	usleep(100000);
+	assert_int(0, ==, qd_input_flush(input));
+	usleep(100000);
+	assert_int(0, ==, qd_input_start(input));
+
+	usleep(1000000);
+
+	assert_int(0, ==, qd_input_pause(input));
+	usleep(100000);
+	assert_int(0, ==, qd_input_stop(input));
+	usleep(100000);
+	assert_int(0, ==, qd_input_flush(input));
+	usleep(100000);
+	assert_int(0, ==, qd_input_start(input));
+
+	usleep(1000000);
+
+	ffmpeg_src_thread_join(src);
+	qd_input_flush(input);
+
+	ffmpeg_src_destroy(src);
+	qd_session_destroy(session);
+
+	for (int i = 0; i < 2; i++)
+		peak_analyzer_cleanup(&ctx.pa[i]);
+
+	return MUNIT_OK;
+}
+
+static char *parm_ms12_files_flush[] = {
+	"ddp", "aac_adts", "aac_loas", NULL
+};
+
+static MunitParameterEnum parms_ms12_flush[] = {
+	{ "t", parm_ms12_sessions_all },
+	{ "o", parm_ms12_outputs_pcm_stereo },
+	{ "f", parm_ms12_files_flush },
+	{ NULL, NULL },
+};
+
+/*
  * MS12: test output latency with empty and full input buffers
  *
  * Input files will render a stereo 997Hz tone at -20dBFS.
@@ -1972,6 +2125,10 @@ static MunitTest ms12_tests[] = {
 	  test_ms12_output_reconfig,
 	  pretest_ms12, NULL,
 	  MUNIT_TEST_OPTION_NONE, parms_ms12_output_reconfig },
+	{ "/ms12/flush",
+	  test_ms12_flush,
+	  pretest_ms12, NULL,
+	  MUNIT_TEST_OPTION_NONE, parms_ms12_flush },
 	{ "/ms12/latency",
 	  test_ms12_latency,
 	  pretest_ms12, NULL,
