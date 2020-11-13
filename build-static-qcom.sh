@@ -23,5 +23,4 @@ $SCRIPT_DIR/build-static.sh $@
 
 git archive --prefix="$NAME/" HEAD | tar x
 cp qapdec qaptest "$NAME/"
-cp munit/munit.[ch] "$NAME/munit/"
 zip -r "$NAME.zip" "$NAME"
