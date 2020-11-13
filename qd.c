@@ -1205,7 +1205,7 @@ handle_qap_module_event(qap_module_handle_t module, void *priv,
 			    sizeof (qap_send_buffer_t));
 		} else {
 			qap_send_buffer_t *buf = data;
-			dbg(" in: %s: %u bytes avail", input->name,
+			dbg(" in: %s: notify %u bytes avail", input->name,
 			    buf->bytes_available);
 		}
 		pthread_mutex_lock(&input->lock);
@@ -1418,6 +1418,27 @@ qd_input_set_buffer_size(struct qd_input *input, uint32_t buffer_size)
 	assert(buffer_size == qd_input_get_buffer_size(input));
 
 	return 0;
+}
+
+uint32_t
+qd_input_get_avail_buffer_size(struct qd_input *input)
+{
+	uint32_t param_id = MS12_STREAM_GET_AVAIL_BUF_SIZE;
+	uint32_t buffer_size = 0;
+	uint32_t reply_size = sizeof (buffer_size);
+	int ret;
+
+	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_GET_PARAM,
+			     sizeof (param_id), &param_id,
+			     &reply_size, &buffer_size);
+	if (ret < 0) {
+		err("%s: failed to get avail buffer size", input->name);
+		return 0;
+	}
+
+	assert(reply_size == sizeof (buffer_size));
+
+	return buffer_size;
 }
 
 uint64_t
@@ -1800,6 +1821,9 @@ qd_input_write(struct qd_input *input, void *data, int size, int64_t pts)
 		if (input->buffer_size > 0 &&
 		    qap_buffer.common_params.size > input->buffer_size)
 			qap_buffer.common_params.size = input->buffer_size;
+
+		dbg(" in: %s: %u bytes available", input->name,
+		    qd_input_get_avail_buffer_size(input));
 
 		pthread_mutex_lock(&input->lock);
 		input->buffer_full = true;
