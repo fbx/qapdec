@@ -2309,6 +2309,9 @@ void qd_session_ignore_timestamps(struct qd_session *session, bool ignore)
 void
 qd_session_terminate(struct qd_session *session)
 {
+	if (!session)
+		return;
+
 	info("terminate session");
 	pthread_mutex_lock(&session->lock);
 	session->terminated = true;
