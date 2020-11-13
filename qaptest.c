@@ -1504,6 +1504,8 @@ test_ms12_pause(const MunitParameter params[], void *user_data_or_fixture)
 		usleep(1500000);
 	}
 
+	ctx.state_change_time = qd_get_time();
+
 	ffmpeg_src_thread_stop(src);
 	ffmpeg_src_thread_join(src);
 
