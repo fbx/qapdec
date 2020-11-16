@@ -1266,6 +1266,7 @@ get_av_log_level(void)
 int
 qd_input_start(struct qd_input *input)
 {
+	uint64_t t;
 	int ret;
 
 	if (input->state == QD_INPUT_STATE_STARTED) {
@@ -1275,12 +1276,17 @@ qd_input_start(struct qd_input *input)
 
 	info(" in: %s: start", input->name);
 
+	t = get_time();
+
 	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_START,
 			     0, NULL, NULL, NULL);
 	if (ret) {
 		err("QAP_SESSION_CMD_START command failed");
 		return 1;
 	}
+
+	trace(" in: %s: [t=%" PRIu64 "ms] qap_module_cmd(QAP_MODULE_CMD_START)",
+	      input->name, (get_time() - t) / 1000);
 
 	input->state = QD_INPUT_STATE_STARTED;
 	input->state_change_time = qd_get_time();
@@ -1291,6 +1297,7 @@ qd_input_start(struct qd_input *input)
 int
 qd_input_pause(struct qd_input *input)
 {
+	uint64_t t;
 	int ret;
 
 	if (input->state != QD_INPUT_STATE_STARTED) {
@@ -1300,12 +1307,17 @@ qd_input_pause(struct qd_input *input)
 
 	info(" in: %s: pause", input->name);
 
+	t = get_time();
+
 	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_PAUSE,
 			     0, NULL, NULL, NULL);
 	if (ret) {
 		err("QAP_SESSION_CMD_PAUSE command failed");
 		return 1;
 	}
+
+	trace(" in: %s: [t=%" PRIu64 "ms] qap_module_cmd(QAP_MODULE_CMD_PAUSE)",
+	      input->name, (get_time() - t) / 1000);
 
 	input->state = QD_INPUT_STATE_PAUSED;
 	input->state_change_time = qd_get_time();
@@ -1316,6 +1328,7 @@ qd_input_pause(struct qd_input *input)
 int
 qd_input_stop(struct qd_input *input)
 {
+	uint64_t t;
 	int ret;
 
 	if (input->state == QD_INPUT_STATE_STOPPED) {
@@ -1325,12 +1338,17 @@ qd_input_stop(struct qd_input *input)
 
 	info(" in: %s: stop", input->name);
 
+	t = get_time();
+
 	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_STOP,
 			     0, NULL, NULL, NULL);
 	if (ret) {
 		err("QAP_SESSION_CMD_STOP command failed");
 		return 1;
 	}
+
+	trace(" in: %s: [t=%" PRIu64 "ms] qap_module_cmd(QAP_MODULE_CMD_STOP)",
+	      input->name, (get_time() - t) / 1000);
 
 	input->state = QD_INPUT_STATE_STOPPED;
 	input->state_change_time = qd_get_time();
@@ -1341,9 +1359,12 @@ qd_input_stop(struct qd_input *input)
 int
 qd_input_flush(struct qd_input *input)
 {
+	uint64_t t;
 	int ret;
 
 	info(" in: %s: flush", input->name);
+
+	t = get_time();
 
 	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_FLUSH,
 			     0, NULL, NULL, NULL);
@@ -1351,6 +1372,9 @@ qd_input_flush(struct qd_input *input)
 		err("QAP_SESSION_CMD_FLUSH command failed");
 		return 1;
 	}
+
+	trace(" in: %s: [t=%" PRIu64 "ms] qap_module_cmd(QAP_MODULE_CMD_FLUSH)",
+	      input->name, (get_time() - t) / 1000);
 
 	info(" in: %s: flush done", input->name);
 
@@ -1379,23 +1403,59 @@ qd_input_block(struct qd_input *input, bool block)
 	return 0;
 }
 
-uint32_t
-qd_input_get_buffer_size(struct qd_input *input)
+static int
+qd_input_get_param(struct qd_input *input, uint32_t param_id,
+		   void *data, size_t size)
 {
-	uint32_t param_id = MS12_STREAM_GET_INPUT_BUF_SIZE;
-	uint32_t buffer_size = 0;
-	uint32_t reply_size = sizeof (buffer_size);
-	int ret;
+	qap_status_t ret;
+	uint32_t reply_size;
+	uint64_t t;
+
+	t = get_time();
 
 	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_GET_PARAM,
 			     sizeof (param_id), &param_id,
-			     &reply_size, &buffer_size);
+			     &reply_size, data);
+
+	trace(" in: %s: [t=%" PRIu64 "ms] qap_module_cmd(QAP_MODULE_CMD_GET_PARAM, %u)",
+	      input->name, (get_time() - t) / 1000, param_id);
+
+	assert(reply_size == size);
+
+	return ret;
+}
+
+static int
+qd_input_set_param(struct qd_input *input,
+		   uint32_t param_id, uint32_t value)
+{
+	uint32_t params[] = { param_id, value };
+	qap_status_t ret;
+	uint64_t t;
+
+	t = get_time();
+
+	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_SET_PARAM,
+			     sizeof (params), params, NULL, NULL);
+
+	trace(" in: %s: [t=%" PRIu64 "ms] qap_module_cmd(QAP_MODULE_CMD_SET_PARAM, %u)",
+	      input->name, (get_time() - t) / 1000, param_id);
+
+	return ret;
+}
+
+uint32_t
+qd_input_get_buffer_size(struct qd_input *input)
+{
+	uint32_t buffer_size = 0;
+	int ret;
+
+	ret = qd_input_get_param(input, MS12_STREAM_GET_INPUT_BUF_SIZE,
+				 &buffer_size, sizeof (buffer_size));
 	if (ret < 0) {
 		err("%s: failed to get buffer size", input->name);
 		return 0;
 	}
-
-	assert(reply_size == sizeof (buffer_size));
 
 	return buffer_size;
 }
@@ -1403,13 +1463,12 @@ qd_input_get_buffer_size(struct qd_input *input)
 int
 qd_input_set_buffer_size(struct qd_input *input, uint32_t buffer_size)
 {
-	uint32_t params[] = { MS12_STREAM_SET_INPUT_BUF_SIZE, buffer_size };
 	int ret;
 
 	info(" in: %s: set buffer size %u bytes", input->name, buffer_size);
 
-	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_SET_PARAM,
-			     sizeof (params), params, NULL, NULL);
+	ret = qd_input_set_param(input, MS12_STREAM_SET_INPUT_BUF_SIZE,
+				 buffer_size);
 	if (ret < 0) {
 		err("%s: failed to set buffer size %u", input->name,
 		    buffer_size);
@@ -1424,20 +1483,15 @@ qd_input_set_buffer_size(struct qd_input *input, uint32_t buffer_size)
 uint32_t
 qd_input_get_avail_buffer_size(struct qd_input *input)
 {
-	uint32_t param_id = MS12_STREAM_GET_AVAIL_BUF_SIZE;
 	uint32_t buffer_size = 0;
-	uint32_t reply_size = sizeof (buffer_size);
 	int ret;
 
-	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_GET_PARAM,
-			     sizeof (param_id), &param_id,
-			     &reply_size, &buffer_size);
+	ret = qd_input_get_param(input, MS12_STREAM_GET_AVAIL_BUF_SIZE,
+				 &buffer_size, sizeof (buffer_size));
 	if (ret < 0) {
 		err("%s: failed to get avail buffer size", input->name);
 		return 0;
 	}
-
-	assert(reply_size == sizeof (buffer_size));
 
 	return buffer_size;
 }
@@ -1445,20 +1499,15 @@ qd_input_get_avail_buffer_size(struct qd_input *input)
 uint64_t
 qd_input_get_output_frames(struct qd_input *input)
 {
-	uint32_t param_id = MS12_STREAM_GET_DECODER_OUTPUT_FRAME;
 	uint64_t frames = 0;
-	uint32_t reply_size = sizeof (frames);
 	int ret;
 
-	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_GET_PARAM,
-			     sizeof (param_id), &param_id,
-			     &reply_size, &frames);
+	ret = qd_input_get_param(input, MS12_STREAM_GET_DECODER_OUTPUT_FRAME,
+				 &frames, sizeof (frames));
 	if (ret < 0) {
 		err("%s: failed to get output frames", input->name);
 		return 0;
 	}
-
-	assert(reply_size == sizeof (frames));
 
 	return frames;
 }
@@ -1466,22 +1515,17 @@ qd_input_get_output_frames(struct qd_input *input)
 int
 qd_input_get_io_info(struct qd_input *input, qap_report_frames_t *report)
 {
-	uint32_t param_id = MS12_STREAM_GET_DECODER_IO_FRAMES_INFO;
-	uint32_t reply_size = sizeof (*report);
 	int ret;
 
 	if (!report)
 		return -1;
 
-	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_GET_PARAM,
-			     sizeof (param_id), &param_id,
-			     &reply_size, report);
+	ret = qd_input_get_param(input, MS12_STREAM_GET_DECODER_IO_FRAMES_INFO,
+				 report, sizeof (*report));
 	if (ret < 0) {
 		err("%s: failed to get decoder io info", input->name);
 		return -1;
 	}
-
-	assert(reply_size == sizeof (*report));
 
 	return 0;
 }
@@ -1489,20 +1533,15 @@ qd_input_get_io_info(struct qd_input *input, qap_report_frames_t *report)
 int
 qd_input_get_latency(struct qd_input *input)
 {
-	uint32_t param_id = MS12_STREAM_GET_LATENCY;
 	int64_t latency = 0;
-	uint32_t reply_size = sizeof (latency);
 	int ret;
 
-	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_GET_PARAM,
-			     sizeof (param_id), &param_id,
-			     &reply_size, &latency);
+	ret = qd_input_get_param(input, MS12_STREAM_GET_LATENCY,
+				 &latency, sizeof (latency));
 	if (ret < 0) {
 		err("%s: failed to get latency", input->name);
 		return 0;
 	}
-
-	assert(reply_size == sizeof (latency));
 
 	return latency;
 }
@@ -2191,6 +2230,7 @@ qd_session_configure_outputs(struct qd_session *session,
 {
 	qap_session_outputs_config_t qap_session_cfg;
 	uint32_t outputs_present = 0;
+	uint64_t t;
 	int ret;
 
 	info("enable outputs:");
@@ -2262,6 +2302,8 @@ qd_session_configure_outputs(struct qd_session *session,
 	}
 
 	/* setup outputs */
+	t = get_time();
+
 	ret = qap_session_cmd(session->handle, QAP_SESSION_CMD_SET_OUTPUTS,
 			      sizeof (qap_session_cfg), &qap_session_cfg,
 			      NULL, NULL);
@@ -2270,12 +2312,16 @@ qd_session_configure_outputs(struct qd_session *session,
 		return ret;
 	}
 
+	trace("session: [t=%" PRIu64 "ms] qap_session_cmd(QAP_SESSION_CMD_SET_OUTPUTS)",
+	      (get_time() - t) / 1000);
+
 	return 0;
 }
 
 int
 qd_session_set_kvpairs(struct qd_session *session, char *kvpairs_format, ...)
 {
+	uint64_t t;
 	va_list ap;
 	char buf[1024];
 	int len, ret;
@@ -2289,12 +2335,17 @@ qd_session_set_kvpairs(struct qd_session *session, char *kvpairs_format, ...)
 
 	info("set kvpairs %s", buf);
 
+	t = get_time();
+
 	ret = qap_session_cmd(session->handle, QAP_SESSION_CMD_SET_KVPAIRS,
 			      len, buf, NULL, NULL);
 	if (ret) {
 		err("QAP_SESSION_CMD_SET_KVPAIRS '%s' failed: %d", buf, ret);
 		return ret;
 	}
+
+	trace("session: [t=%" PRIu64 "ms] qap_session_cmd(QAP_SESSION_CMD_SET_KVPAIRS)",
+	      (get_time() - t) / 1000);
 
 	return 0;
 }

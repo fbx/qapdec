@@ -33,6 +33,9 @@ extern int qd_debug_level;
 #define dbg(msg, ...) \
 	log(3, msg "\n", ##__VA_ARGS__)
 
+#define trace(msg, ...) \
+	log(4, msg "\n", ##__VA_ARGS__)
+
 #define QD_N_ELEMENTS(x) (sizeof (x) / sizeof (*(x)))
 #define QD_MIN(a, b)	((a) < (b) ? (a) : (b))
 #define QD_MAX(a, b)	((a) > (b) ? (a) : (b))
