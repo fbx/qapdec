@@ -1819,7 +1819,8 @@ fail:
 }
 
 int
-qd_input_write(struct qd_input *input, void *data, int size, int64_t pts)
+qd_input_write(struct qd_input *input, void *data, int size,
+	       int64_t pts, int64_t duration)
 {
 	qap_audio_buffer_t qap_buffer;
 	qap_report_frames_t report_frames;
@@ -1900,6 +1901,9 @@ qd_input_write(struct qd_input *input, void *data, int size, int64_t pts)
 
 	if (input->terminated)
 		return -1;
+
+	if (duration != AV_NOPTS_VALUE)
+		input->written_duration += duration;
 
 	dbg(" in: %s: generated %" PRIu64 " frames", input->name,
 	    qd_input_get_output_frames(input));
@@ -2075,6 +2079,7 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 	AVStream *avstream;
 	AVPacket pkt;
 	int64_t pts;
+	int64_t duration;
 	int ret;
 
 	av_init_packet(&pkt);
@@ -2117,6 +2122,13 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 		pts = av_rescale_q(pts, av_timebase, qap_timebase);
 	}
 
+	duration = pkt.duration;
+	if (duration != AV_NOPTS_VALUE) {
+		AVRational av_timebase = avstream->time_base;
+		AVRational qap_timebase = { 1, 1000000 };
+		duration = av_rescale_q(duration, av_timebase, qap_timebase);
+	}
+
 	if (input->insert_adts_header) {
 		/* packets should have AV_INPUT_BUFFER_PADDING_SIZE padding in
 		 * them, so we can use that to avoid a copy */
@@ -2130,7 +2142,8 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 		pkt.data[5] |= (pkt.size & 0x07) << 5;
 
 		/* push the audio frame to the decoder */
-		ret = qd_input_write(input, pkt.data, pkt.size, pts);
+		ret = qd_input_write(input, pkt.data, pkt.size,
+				     pts, duration);
 
 	} else if (input->avmux) {
 		AVIOContext *avio;
@@ -2155,11 +2168,13 @@ ffmpeg_src_read_frame(struct ffmpeg_src *src)
 		size = avio_close_dyn_buf(input->avmux->pb, &data);
 		input->avmux->pb = NULL;
 
-		ret = qd_input_write(input, data, size, pts);
+		ret = qd_input_write(input, data, size,
+				     pts, duration);
 		av_free(data);
 	} else {
 		/* push the audio frame to the decoder */
-		ret = qd_input_write(input, pkt.data, pkt.size, pts);
+		ret = qd_input_write(input, pkt.data, pkt.size,
+				     pts, duration);
 	}
 
 	if (input->state == QD_INPUT_STATE_PAUSED &&

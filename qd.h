@@ -124,6 +124,7 @@ struct qd_input {
 	uint64_t start_time;
 	uint64_t state_change_time;
 	uint64_t written_bytes;
+	uint64_t written_duration;
 	struct qd_session *session;
 	qd_input_event_func_t event_cb_func;
 	void *event_cb_data;
@@ -222,7 +223,8 @@ struct qd_input *qd_input_create(struct qd_session *session,
 struct qd_input *qd_input_create_from_avstream(struct qd_session *session,
 					       enum qd_input_id id,
 					       AVStream *avstream);
-int qd_input_write(struct qd_input *input, void *data, int size, int64_t pts);
+int qd_input_write(struct qd_input *input, void *data, int size,
+		   int64_t pts, int64_t duration);
 void qd_input_set_event_cb(struct qd_input *input, qd_input_event_func_t func,
 			   void *userdata);
 
