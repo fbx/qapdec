@@ -1857,6 +1857,281 @@ static MunitParameterEnum parms_ms12_flush[] = {
 };
 
 /*
+ * MS12: test flushing clears all buffered input data and does not clear any
+ * data written afterwards.
+ *
+ * For this test we use the Downmix files from the dolby test signals, which
+ * outputs a 997Hz tone, then silence, then a 403Hz tone. We first write a few
+ * frames of the 997Hz tone, flush, and then seek to the silence frames in the
+ * file.
+ *
+ * We check that after flushing only silence and the 403Hz can be heard, and
+ * that the number of rendered output samples after flushing matches exactly
+ * the number of input frames written.
+ */
+
+enum flush2_state {
+	FLUSH2_INPUT_TONE1,
+	FLUSH2_FLUSHED,
+	FLUSH2_GENERATED_SILENCE,
+	FLUSH2_INPUT_SILENCE,
+	FLUSH2_INPUT_TONE2,
+	FLUSH2_DONE,
+};
+
+struct flush2_ctx {
+	struct peak_analyzer pa[2];
+	int state;
+	int flush_latency;
+	int silent_frames;
+	int input_silent_frames_rendered;
+	int input_tone2_frames_rendered;
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
+};
+
+static void
+flush2_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
+		 void *userdata)
+{
+	struct flush2_ctx *ctx = userdata;
+	size_t frame_size;
+	void *data;
+	int silence_size;
+	int size;
+
+	/* check output config */
+	assert_int(output->config.sample_rate, ==, 48000);
+	assert_int(output->config.bit_width, ==, 16);
+
+	frame_size = output->config.channels * output->config.bit_width / 8;
+	assert_int(buffer->common_params.size % frame_size, ==, 0);
+
+	/* find main data offset */
+	silence_size = frame_size * output->delay.non_main_data_length;
+	size = buffer->common_params.size - silence_size;
+	data = buffer->common_params.data;
+	if (output->delay.non_main_data_offset == 0)
+		data += silence_size;
+
+	pthread_mutex_lock(&ctx->lock);
+
+again:
+	switch (ctx->state) {
+	case FLUSH2_INPUT_TONE1:
+		assert_int(0, ==, output->delay.non_main_data_length);
+		break;
+
+	case FLUSH2_FLUSHED:
+		ctx->flush_latency += (buffer->common_params.size / frame_size) -
+			output->delay.non_main_data_offset;
+
+		if (output->delay.non_main_data_length > 0) {
+			info("===> GENERATED_SILENCE");
+			ctx->state = FLUSH2_GENERATED_SILENCE;
+		}
+		break;
+
+	case FLUSH2_GENERATED_SILENCE:
+		if (size > 0) {
+			info("===> INPUT_SILENCE");
+			ctx->state = FLUSH2_INPUT_SILENCE;
+			goto again;
+		}
+		break;
+
+	case FLUSH2_INPUT_TONE2:
+	case FLUSH2_INPUT_SILENCE:
+		if (size == 0) {
+			/* generated silence, it means we're done or in
+			 * underrun, so end the test */
+			info("===> DONE");
+			ctx->state = FLUSH2_DONE;
+			pthread_cond_signal(&ctx->cond);
+			break;
+		}
+
+		/* feed left and right channel data */
+		for (size_t i = 0; i < size; i += frame_size) {
+			int16_t *frame = data + i;
+			bool silent = int16_is_silence(frame, 2);
+
+			if (ctx->state == FLUSH2_INPUT_SILENCE) {
+				if (silent) {
+					ctx->input_silent_frames_rendered++;
+					continue;
+				}
+
+				info("===> INPUT_TONE2");
+				ctx->state = FLUSH2_INPUT_TONE2;
+			}
+
+			if (silent)
+				ctx->silent_frames++;
+			else
+				ctx->silent_frames = 0;
+
+			assert_int(48, >, ctx->silent_frames);
+			ctx->input_tone2_frames_rendered++;
+
+			peak_analyzer_add_samples(&ctx->pa[0], frame + 0, 1);
+			peak_analyzer_add_samples(&ctx->pa[1], frame + 1, 1);
+		}
+
+		for (int i = 0; i < 2; i++) {
+			double freq, gain;
+
+			/* fill window before running fft and analyzing data */
+			if (ctx->pa[i].n_samples != ctx->pa[i].max_samples)
+				continue;
+
+			/* verify peak frequency and gain are correct */
+			assert_true(peak_analyzer_run(&ctx->pa[i], &freq, &gain));
+
+			/* check peak frequency */
+			assert_double(freq, >=, 403);
+			assert_double(freq, <=, 405);
+
+			/* reset window */
+			ctx->pa[i].n_samples = 0;
+		}
+		break;
+
+	case FLUSH2_DONE:
+		break;
+	}
+
+	pthread_mutex_unlock(&ctx->lock);
+}
+
+static MunitResult
+test_ms12_flush2(const MunitParameter params[],
+		 void *user_data_or_fixture)
+{
+	struct qd_session *session;
+	struct qd_input *input;
+	struct ffmpeg_src *src;
+	const char *v, *f;
+	struct flush2_ctx ctx = {};
+	struct timespec timeout;
+
+	pthread_mutex_init(&ctx.lock, NULL);
+	pthread_cond_init(&ctx.cond, NULL);
+
+	ctx.state = FLUSH2_INPUT_TONE1;
+
+	if (!(session = setup_ms12_session(params)))
+		return MUNIT_SKIP;
+
+	qd_session_set_output_cb(session, flush2_output_cb, &ctx);
+	qd_session_set_realtime(session, true);
+
+	/* set stereo downmix mode to get a downmixed 403Hz tone */
+	qd_session_set_kvpairs(session, "dmx=0");
+
+	for (int i = 0; i < 2; i++)
+		peak_analyzer_init(&ctx.pa[i], 48000, 48000, WIN_RECT);
+
+	/* create main input */
+	v = munit_parameters_get(params, "f");
+	if (!(f = find_filename(stereo_downmix_files, v)))
+		return MUNIT_ERROR;
+
+	assert_not_null((src = ffmpeg_src_create(f, NULL)));
+	assert_not_null((input = ffmpeg_src_add_input(src, 0, session,
+						      QD_INPUT_MAIN)));
+
+#if 0
+	assert_int(0, <, ffmpeg_src_read_frame(src));
+#else
+	/* seek to the 997Hz tone */
+	assert_int(0, ==, ffmpeg_src_seek(src, 6000));
+
+	/* feed a few frames */
+	for (int i = 0; i < 30; i++)
+		assert_int(0, <, ffmpeg_src_read_frame(src));
+#endif
+
+	/* flush ms12 input */
+	assert_int(0, ==, qd_input_flush(input));
+
+	pthread_mutex_lock(&ctx.lock);
+	ctx.state = FLUSH2_FLUSHED;
+	info("===> FLUSHED");
+	pthread_mutex_unlock(&ctx.lock);
+
+	/* wait so that silence is notified on the output, allowing us to
+	 * detect the transition */
+	usleep(500000);
+
+	/* seek to the silence before the 403Hz tone */
+	assert_int(0, ==, ffmpeg_src_seek(src, 12000));
+
+	/* reset written duration */
+	input->written_duration = 0;
+	input->written_bytes = 0;
+
+	/* set timeout to render the next set of frames */
+	clock_gettime(CLOCK_REALTIME, &timeout);
+	timeout.tv_sec += 5;
+
+	/* feed 4 seconds of audio from the input file */
+	while (input->written_duration < 4 * QD_SECOND)
+		assert_int(0, <, ffmpeg_src_read_frame(src));
+
+	/* wait for output to notify end of processing */
+	pthread_mutex_lock(&ctx.lock);
+	while (ctx.state != FLUSH2_DONE) {
+		assert_int(0, ==, pthread_cond_timedwait(&ctx.cond, &ctx.lock,
+							 &timeout));
+	}
+	pthread_mutex_unlock(&ctx.lock);
+
+	info("%" PRIu64 "ms input duration",
+	     input->written_duration / QD_MSECOND);
+	info("%d silent rendered frames", ctx.input_silent_frames_rendered);
+	info("%d tone2 rendered frames", ctx.input_tone2_frames_rendered);
+	info("%d flush delay frames", ctx.flush_latency);
+
+	/* ensure flush delay is not too high */
+	assert_int(48 * 32, >=, ctx.flush_latency);
+
+	/* we fed a fixed ampount of silence from the input file after flush,
+	 * verify this is what we've seen on the output */
+	if (!strcmp(f, "ddp")) {
+		assert_int(48 * 1028, <=, ctx.input_silent_frames_rendered);
+		assert_int(48 * 1030, >=, ctx.input_silent_frames_rendered);
+	} else if (!strcmp(f, "aac_adts") || !strcmp(f, "aac_loas")) {
+		assert_int(48 * 1214, <=, ctx.input_silent_frames_rendered);
+		assert_int(48 * 1216, >=, ctx.input_silent_frames_rendered);
+	}
+
+	/* verify we've seen all frames fed after flush */
+	assert_ulong(input->written_duration / QD_MSECOND, ==,
+		     (ctx.input_silent_frames_rendered +
+		      ctx.input_tone2_frames_rendered) / 48);
+
+	ffmpeg_src_destroy(src);
+	qd_session_destroy(session);
+
+	for (int i = 0; i < 2; i++)
+		peak_analyzer_cleanup(&ctx.pa[i]);
+
+	return MUNIT_OK;
+}
+
+static char *parm_ms12_files_flush2[] = {
+	"ddp", "aac_adts", "aac_loas", NULL
+};
+
+static MunitParameterEnum parms_ms12_flush2[] = {
+	{ "t", parm_ms12_sessions_ott_only },
+	{ "o", parm_ms12_outputs_pcm_stereo },
+	{ "f", parm_ms12_files_flush2 },
+	{ NULL, NULL },
+};
+
+/*
  * MS12: test output latency with empty and full input buffers
  *
  * Input files will render a stereo 997Hz tone at -20dBFS.
@@ -2131,6 +2406,10 @@ static MunitTest ms12_tests[] = {
 	  test_ms12_flush,
 	  pretest_ms12, NULL,
 	  MUNIT_TEST_OPTION_NONE, parms_ms12_flush },
+	{ "/ms12/flush2",
+	  test_ms12_flush2,
+	  pretest_ms12, NULL,
+	  MUNIT_TEST_OPTION_NONE, parms_ms12_flush2 },
 	{ "/ms12/latency",
 	  test_ms12_latency,
 	  pretest_ms12, NULL,
