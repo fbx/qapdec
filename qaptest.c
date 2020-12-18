@@ -2052,8 +2052,20 @@ test_ms12_flush2(const MunitParameter params[],
 		assert_int(0, <, ffmpeg_src_read_frame(src));
 #endif
 
+	/* optionally change state before flushing */
+	v = munit_parameters_get(params, "s");
+	if (!strcmp(v, "paused"))
+		assert_int(0, ==, qd_input_pause(input));
+	else if (!strcmp(v, "stopped"))
+		assert_int(0, ==, qd_input_stop(input));
+
 	/* flush ms12 input */
 	assert_int(0, ==, qd_input_flush(input));
+
+	if (!strcmp(v, "destroyed")) {
+		ffmpeg_src_destroy(src);
+		src = NULL;
+	}
 
 	pthread_mutex_lock(&ctx.lock);
 	ctx.state = FLUSH2_FLUSHED;
@@ -2063,6 +2075,15 @@ test_ms12_flush2(const MunitParameter params[],
 	/* wait so that silence is notified on the output, allowing us to
 	 * detect the transition */
 	usleep(500000);
+
+	/* restart playback */
+	if (!src) {
+		assert_not_null((src = ffmpeg_src_create(f, NULL)));
+		assert_not_null((input = ffmpeg_src_add_input(src, 0, session,
+							      QD_INPUT_MAIN)));
+	}
+
+	assert_int(0, ==, qd_input_start(input));
 
 	/* seek to the silence before the 403Hz tone */
 	assert_int(0, ==, ffmpeg_src_seek(src, 12000));
@@ -2079,6 +2100,9 @@ test_ms12_flush2(const MunitParameter params[],
 	while (input->written_duration < 4 * QD_SECOND)
 		assert_int(0, <, ffmpeg_src_read_frame(src));
 
+	/* enforce complete drain of input data */
+	assert_int(0, ==, qd_input_send_eos(input));
+
 	/* wait for output to notify end of processing */
 	pthread_mutex_lock(&ctx.lock);
 	while (ctx.state != FLUSH2_DONE) {
@@ -2092,6 +2116,9 @@ test_ms12_flush2(const MunitParameter params[],
 	info("%d silent rendered frames", ctx.input_silent_frames_rendered);
 	info("%d tone2 rendered frames", ctx.input_tone2_frames_rendered);
 	info("%d flush delay frames", ctx.flush_latency);
+
+	/* verify we've received EOS */
+	assert_true(qd_session_get_eos(session, QD_INPUT_MAIN));
 
 	/* ensure flush delay is not too high */
 	assert_int(48 * 32, >=, ctx.flush_latency);
@@ -2121,13 +2148,137 @@ test_ms12_flush2(const MunitParameter params[],
 }
 
 static char *parm_ms12_files_flush2[] = {
-	"ddp", "aac_adts", "aac_loas", NULL
+	"ddp", /*"aac_adts", "aac_loas",*/ NULL
+};
+
+static char *parm_ms12_states_flush2[] = {
+	"started", "paused", "stopped", "destroyed", NULL
 };
 
 static MunitParameterEnum parms_ms12_flush2[] = {
 	{ "t", parm_ms12_sessions_ott_only },
 	{ "o", parm_ms12_outputs_pcm_stereo },
 	{ "f", parm_ms12_files_flush2 },
+	{ "s", parm_ms12_states_flush2 },
+	{ NULL, NULL },
+};
+
+/*
+ * MS12: simpler flush test that works with AAC.
+ */
+
+struct flush3_ctx {
+	bool flushed;
+};
+
+static void
+flush3_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
+		 void *userdata)
+{
+	struct flush3_ctx *ctx = userdata;
+	size_t frame_size;
+
+	/* check output config */
+	assert_int(output->config.sample_rate, ==, 48000);
+	assert_int(output->config.bit_width, ==, 16);
+
+	frame_size = output->config.channels * output->config.bit_width / 8;
+	assert_int(buffer->common_params.size % frame_size, ==, 0);
+
+	/* feed left and right channel data */
+	for (size_t i = 0; i < buffer->common_params.size; i += frame_size) {
+		int16_t *frame = buffer->common_params.data + i;
+		bool silent = int16_is_silence(frame, 2);
+
+		assert_true(!ctx->flushed || silent);
+	}
+}
+
+static MunitResult
+test_ms12_flush3(const MunitParameter params[],
+		 void *user_data_or_fixture)
+{
+	struct qd_session *session;
+	struct qd_input *input;
+	struct ffmpeg_src *src;
+	const char *v, *f;
+	struct flush3_ctx ctx = {};
+
+	if (!(session = setup_ms12_session(params)))
+		return MUNIT_SKIP;
+
+	qd_session_set_output_cb(session, flush3_output_cb, &ctx);
+
+	/* create main input */
+	v = munit_parameters_get(params, "f");
+	if (!(f = find_filename(stereo_downmix_files, v)))
+		return MUNIT_ERROR;
+
+	assert_not_null((src = ffmpeg_src_create(f, NULL)));
+	assert_not_null((input = ffmpeg_src_add_input(src, 0, session,
+						      QD_INPUT_MAIN)));
+
+	/* seek to the 997Hz tone */
+	assert_int(0, ==, ffmpeg_src_seek(src, 6000));
+
+	/* feed a few frames */
+	for (int i = 0; i < 30; i++)
+		assert_int(0, <, ffmpeg_src_read_frame(src));
+
+	/* optionally change state before flushing */
+	v = munit_parameters_get(params, "s");
+	if (!strcmp(v, "paused"))
+		assert_int(0, ==, qd_input_pause(input));
+	else if (!strcmp(v, "stopped"))
+		assert_int(0, ==, qd_input_stop(input));
+
+	/* flush ms12 input */
+	assert_int(0, ==, qd_input_flush(input));
+
+	if (!strcmp(v, "destroyed")) {
+		ffmpeg_src_destroy(src);
+		src = NULL;
+	}
+
+	/* wait so that silence is notified on the output, allowing us to
+	 * detect the transition */
+	usleep(200000);
+
+	ctx.flushed = true;
+
+	/* restart playback */
+	if (!src) {
+		assert_not_null((src = ffmpeg_src_create(f, NULL)));
+		assert_not_null((input = ffmpeg_src_add_input(src, 0, session,
+							      QD_INPUT_MAIN)));
+	}
+
+	assert_int(0, ==, qd_input_start(input));
+
+	/* kickstart the pipeline with a silence frame */
+	assert_int(0, <, ffmpeg_src_read_frame(src));
+
+	usleep(200000);
+
+	ffmpeg_src_destroy(src);
+	qd_session_destroy(session);
+
+	return MUNIT_OK;
+}
+
+static char *parm_ms12_files_flush3[] = {
+	"ddp", "aac_adts", "aac_loas", NULL
+};
+
+static char *parm_ms12_states_flush3[] = {
+	"started", "paused", "stopped", "destroyed", NULL
+};
+
+static MunitParameterEnum parms_ms12_flush3[] = {
+	{ "t", parm_ms12_sessions_ott_only },
+	{ "o", parm_ms12_outputs_pcm_stereo },
+	{ "f", parm_ms12_files_flush3 },
+	{ "s", parm_ms12_states_flush3 },
 	{ NULL, NULL },
 };
 
@@ -2410,6 +2561,10 @@ static MunitTest ms12_tests[] = {
 	  test_ms12_flush2,
 	  pretest_ms12, NULL,
 	  MUNIT_TEST_OPTION_NONE, parms_ms12_flush2 },
+	{ "/ms12/flush3",
+	  test_ms12_flush3,
+	  pretest_ms12, NULL,
+	  MUNIT_TEST_OPTION_NONE, parms_ms12_flush3 },
 	{ "/ms12/latency",
 	  test_ms12_latency,
 	  pretest_ms12, NULL,
