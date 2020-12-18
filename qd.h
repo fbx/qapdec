@@ -198,6 +198,7 @@ int qd_session_configure_outputs(struct qd_session *session,
 				 const enum qd_output_id *outputs);
 void qd_session_set_dump_path(struct qd_session *session, const char *path);
 void qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id);
+bool qd_session_get_eos(struct qd_session *session, enum qd_input_id input_id);
 void qd_session_terminate(struct qd_session *session);
 struct qd_output *qd_session_get_output(struct qd_session *session,
 					enum qd_output_id id);
@@ -209,6 +210,7 @@ int qd_input_pause(struct qd_input *input);
 int qd_input_stop(struct qd_input *input);
 int qd_input_flush(struct qd_input *input);
 int qd_input_block(struct qd_input *input, bool block);
+int qd_input_send_eos(struct qd_input *input);
 uint32_t qd_input_get_buffer_size(struct qd_input *input);
 int qd_input_set_buffer_size(struct qd_input *input, uint32_t buffer_size);
 uint64_t qd_input_get_decoded_frames(struct qd_input *input);

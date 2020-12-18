@@ -1403,6 +1403,32 @@ qd_input_block(struct qd_input *input, bool block)
 	return 0;
 }
 
+int
+qd_input_send_eos(struct qd_input *input)
+{
+	qap_audio_buffer_t qap_buffer;
+	char c = 0;
+	int ret;
+
+	if (input->state == QD_INPUT_STATE_STOPPED)
+		return 0;
+
+	memset(&qap_buffer, 0, sizeof (qap_buffer));
+	qap_buffer.buffer_parms.input_buf_params.flags = QAP_BUFFER_EOS;
+	qap_buffer.common_params.data = &c;
+
+	ret = qap_module_process(input->module, &qap_buffer);
+	if (ret) {
+		err("%s: failed to send eos, err %d",
+		    input->name, ret);
+		return 1;
+	}
+
+	info(" in: %s: sent EOS", input->name);
+
+	return 0;
+}
+
 static int
 qd_input_get_param(struct qd_input *input, uint32_t param_id,
 		   void *data, size_t size)
@@ -2434,6 +2460,12 @@ qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id)
 		pthread_cond_wait(&session->cond, &session->lock);
 	}
 	pthread_mutex_unlock(&session->lock);
+}
+
+bool
+qd_session_get_eos(struct qd_session *session, enum qd_input_id input_id)
+{
+	return session->eos_inputs & (1 << input_id);
 }
 
 void
