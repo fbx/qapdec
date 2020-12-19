@@ -482,9 +482,7 @@ test_ms12_channel_sweep(const MunitParameter params[],
 	qd_input_set_event_cb(input, input_event_cb_record, &ctx);
 	assert_int(0, ==, ffmpeg_src_thread_start(src));
 	assert_int(0, ==, ffmpeg_src_thread_join(src));
-
-	/* drain output */
-	qd_session_wait_eos(session, QD_INPUT_MAIN);
+	assert_int(0, ==, ffmpeg_src_wait_eos(src, false, 1 * QD_SECOND));
 
 	/* check we received the expected number of input configuration events */
 	assert_int(ctx.n_configs, ==, ctx.f->n_configs);
@@ -648,13 +646,17 @@ test_ms12_assoc_mix(const MunitParameter params[],
 	assert_int(0, ==, ffmpeg_src_thread_start(src_main));
 	assert_int(0, ==, ffmpeg_src_thread_start(src_assoc));
 
+	/* drain main */
 	assert_int(0, ==, ffmpeg_src_thread_join(src_main));
-	qd_session_wait_eos(session, QD_INPUT_MAIN);
+	assert_int(0, ==, ffmpeg_src_wait_eos(src_main, false,
+					      1 * QD_SECOND));
 
+	/* drain assoc */
 	ffmpeg_src_thread_stop(src_assoc);
-	qd_session_wait_eos(session, QD_INPUT_ASSOC);
+	ffmpeg_src_thread_join(src_assoc);
+	assert_int(0, ==, ffmpeg_src_wait_eos(src_assoc, false,
+					      1 * QD_SECOND));
 
-	/* drain output */
 	ffmpeg_src_destroy(src_main);
 	ffmpeg_src_destroy(src_assoc);
 	qd_session_destroy(session);
@@ -811,8 +813,7 @@ test_ms12_assoc_disappearing(const MunitParameter params[],
 	assert_int(0, ==, ffmpeg_src_thread_join(src));
 
 	/* drain output */
-	qd_session_wait_eos(session, QD_INPUT_MAIN);
-	qd_session_wait_eos(session, QD_INPUT_ASSOC);
+	ffmpeg_src_wait_eos(src, false, 1 * QD_SECOND);
 
 	/* verify we've seen at least 2s of silence in left and right channels,
 	 * which is expected while Assoc has "disappeared" */
@@ -972,8 +973,8 @@ test_ms12_main2_mix(const MunitParameter params[],
 	assert_int(0, ==, ffmpeg_src_thread_join(src_main2));
 
 	/* drain output */
-	qd_session_wait_eos(session, QD_INPUT_MAIN);
-	qd_session_wait_eos(session, QD_INPUT_MAIN2);
+	ffmpeg_src_wait_eos(src_main, false, 1 * QD_SECOND);
+	ffmpeg_src_wait_eos(src_main2, false, 1 * QD_SECOND);
 
 	ffmpeg_src_destroy(src_main);
 	ffmpeg_src_destroy(src_main2);
@@ -1116,7 +1117,7 @@ test_ms12_stereo_downmix(const MunitParameter params[],
 	assert_int(0, ==, ffmpeg_src_thread_join(src));
 
 	/* drain output */
-	qd_session_wait_eos(session, QD_INPUT_MAIN);
+	ffmpeg_src_wait_eos(src, false, 1 * QD_SECOND);
 
 	ffmpeg_src_destroy(src);
 	qd_session_destroy(session);
@@ -1266,7 +1267,7 @@ test_ms12_drc(const MunitParameter params[], void *user_data_or_fixture)
 	assert_int(0, ==, ffmpeg_src_thread_join(src));
 
 	/* drain output */
-	qd_session_wait_eos(session, QD_INPUT_MAIN);
+	ffmpeg_src_wait_eos(src, false, 1 * QD_SECOND);
 
 	ffmpeg_src_destroy(src);
 	qd_session_destroy(session);
@@ -2164,7 +2165,8 @@ static MunitParameterEnum parms_ms12_flush2[] = {
 };
 
 /*
- * MS12: simpler flush test that works with AAC.
+ * MS12: simpler flush test that works with AAC. We send a 997Hz, flush, wait,
+ * restart playback and verify only silence is output after the flush.
  */
 
 struct flush3_ctx {
@@ -2283,6 +2285,132 @@ static MunitParameterEnum parms_ms12_flush3[] = {
 };
 
 /*
+ * MS12: verify EOS event is notified properly.
+ */
+
+static MunitResult
+test_ms12_eos(const MunitParameter params[],
+	      void *user_data_or_fixture)
+{
+	struct qd_session *session;
+	struct ffmpeg_src *src1, *src2;
+	const char *v, *f, *s;
+
+	if (!(session = setup_ms12_session(params)))
+		return MUNIT_SKIP;
+
+	v = munit_parameters_get(params, "f");
+	if (!(f = find_filename(assoc_disappearing_files, v)))
+		return MUNIT_ERROR;
+
+	s = munit_parameters_get(params, "s");
+
+	for (int i = 0; i < 2; i++) {
+		/* create inputs */
+		assert_not_null((src1 = ffmpeg_src_create(f, NULL)));
+		assert_not_null(ffmpeg_src_add_input(src1, 1, session,
+						     QD_INPUT_MAIN));
+		assert_not_null(ffmpeg_src_add_input(src1, 2, session,
+						     QD_INPUT_ASSOC));
+
+		if (!strcmp(v, "ddp")) {
+			assert_not_null((src2 = ffmpeg_src_create(f, NULL)));
+			assert_not_null(ffmpeg_src_add_input(src2, 1, session,
+							     QD_INPUT_MAIN2));
+		} else {
+			src2 = NULL;
+		}
+
+		/* start playback in a dedicated thread */
+		assert_int(0, ==, ffmpeg_src_thread_start(src1));
+		if (src2)
+			assert_int(0, ==, ffmpeg_src_thread_start(src2));
+
+		/* wait for all input to be fed */
+		assert_int(0, ==, ffmpeg_src_thread_join(src1));
+		if (src2)
+			assert_int(0, ==, ffmpeg_src_thread_join(src2));
+
+		/* verify we haven't received spurious EOS events */
+		assert_false(qd_session_wait_eos(session, QD_INPUT_MAIN, 0));
+		assert_false(qd_session_wait_eos(session, QD_INPUT_ASSOC, 0));
+		assert_false(qd_session_wait_eos(session, QD_INPUT_MAIN2, 0));
+
+		if (!strcmp(s, "pause")) {
+			/* pause */
+			for (int i = 0; i < src1->n_streams; i++)
+				assert_int(0, ==, qd_input_pause(src1->streams[i].input));
+			for (int i = 0; src2 && i < src2->n_streams; i++)
+				assert_int(0, ==, qd_input_pause(src2->streams[i].input));
+		} else if (!strcmp(s, "flush")) {
+			/* flush */
+			for (int i = 0; i < src1->n_streams; i++)
+				assert_int(0, ==, qd_input_flush(src1->streams[i].input));
+			for (int i = 0; src2 && i < src2->n_streams; i++)
+				assert_int(0, ==, qd_input_flush(src2->streams[i].input));
+		}
+
+		/* send eos */
+		for (int i = 0; i < src1->n_streams; i++)
+			assert_int(0, ==, qd_input_send_eos(src1->streams[i].input));
+		for (int i = 0; src2 && i < src2->n_streams; i++)
+			assert_int(0, ==, qd_input_send_eos(src2->streams[i].input));
+
+		if (!strcmp(s, "pause")) {
+			/* verify we don't receive EOS during pause */
+			assert_false(qd_session_wait_eos(session, QD_INPUT_MAIN,
+							 1 * QD_SECOND));
+			assert_false(qd_session_wait_eos(session, QD_INPUT_ASSOC,
+							 1 * QD_MSECOND));
+			assert_false(qd_session_wait_eos(session, QD_INPUT_MAIN2,
+							 1 * QD_MSECOND));
+
+			/* resume */
+			for (int i = 0; i < src1->n_streams; i++)
+				assert_int(0, ==, qd_input_start(src1->streams[i].input));
+			for (int i = 0; src2 && i < src2->n_streams; i++)
+				assert_int(0, ==, qd_input_start(src1->streams[i].input));
+		}
+
+		/* verify we receive EOS */
+		assert_true(qd_session_wait_eos(session, QD_INPUT_MAIN,
+						1 * QD_SECOND));
+		assert_true(qd_session_wait_eos(session, QD_INPUT_ASSOC,
+						1 * QD_MSECOND));
+		if (src2) {
+			assert_true(qd_session_wait_eos(session, QD_INPUT_MAIN2,
+							1 * QD_MSECOND));
+		} else {
+			assert_false(qd_session_wait_eos(session, QD_INPUT_MAIN2,
+							 1 * QD_MSECOND));
+		}
+
+		ffmpeg_src_destroy(src1);
+		ffmpeg_src_destroy(src2);
+	}
+
+	qd_session_destroy(session);
+
+	return MUNIT_OK;
+}
+
+static char *parm_ms12_files_eos[] = {
+	"ddp", "aac", NULL,
+};
+
+static char *parm_ms12_states_eos[] = {
+	"simple", "pause", "flush", NULL,
+};
+
+static MunitParameterEnum parms_ms12_eos[] = {
+	{ "t", parm_ms12_sessions_ott_only },
+	{ "o", parm_ms12_outputs_pcm_stereo },
+	{ "f", parm_ms12_files_eos },
+	{ "s", parm_ms12_states_eos },
+	{ NULL, NULL },
+};
+
+/*
  * MS12: test output latency with empty and full input buffers
  *
  * Input files will render a stereo 997Hz tone at -20dBFS.
@@ -2312,7 +2440,7 @@ latency_outputs_prerolled(struct qd_session *session)
 	 */
 	for (size_t i = 0; i < QD_MAX_OUTPUTS; i++) {
 		if (session->outputs[i].enabled &&
-		    session->outputs[i].pts < 4 * 32 * QD_MSECOND)
+		    session->outputs[i].pts < 8 * 32 * QD_MSECOND)
 			return false;
 	}
 	return true;
@@ -2348,8 +2476,10 @@ latency_output_cb(struct qd_output *output, qap_audio_buffer_t *buffer,
 
 	pthread_cond_signal(&ctx->output_cond);
 
-	while (!ctx->written_input_frame)
+	while (!ctx->written_input_frame) {
+		info("WAIT");
 		pthread_cond_wait(&ctx->output_cond, &ctx->output_lock);
+	}
 	pthread_mutex_unlock(&ctx->output_lock);
 
 	for (size_t i = 0; i < buffer->common_params.size; i += frame_size) {
@@ -2417,6 +2547,18 @@ test_ms12_latency(const MunitParameter params[], void *user_data_or_fixture)
 	qd_session_set_output_cb(session, latency_output_cb, &ctx);
 	qd_session_set_buffer_size_ms(session, 32);
 
+	/* play a few frames of ac3 silence data */
+	assert_not_null((src = ffmpeg_src_create("/data/silence.ac3", NULL)));
+	assert_not_null((input = ffmpeg_src_add_input(src, 0, session,
+						      QD_INPUT_MAIN)));
+
+	for (int i = 0; i < 5; i++)
+		ffmpeg_src_read_frame(src);
+
+	info("DONE FEEDING");
+	ffmpeg_src_destroy(src);
+	info("NEW");
+
 	/* create main input */
 	v = munit_parameters_get(params, "f");
 	if (!(input_desc = find_input(latency_inputs, v)))
@@ -2438,9 +2580,6 @@ test_ms12_latency(const MunitParameter params[], void *user_data_or_fixture)
 		assert_int(0, ==, ffmpeg_src_seek(src, 14000));
 
 	pthread_mutex_lock(&ctx.output_lock);
-
-	/* feed data to kick off the scheduler */
-	ffmpeg_src_read_frame(src);
 
 	/* wait for some silence frames on enabled outputs */
 	while (!latency_outputs_prerolled(session))
@@ -2565,6 +2704,10 @@ static MunitTest ms12_tests[] = {
 	  test_ms12_flush3,
 	  pretest_ms12, NULL,
 	  MUNIT_TEST_OPTION_NONE, parms_ms12_flush3 },
+	{ "/ms12/eos",
+	  test_ms12_eos,
+	  pretest_ms12, NULL,
+	  MUNIT_TEST_OPTION_NONE, parms_ms12_eos },
 	{ "/ms12/latency",
 	  test_ms12_latency,
 	  pretest_ms12, NULL,

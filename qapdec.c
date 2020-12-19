@@ -599,6 +599,12 @@ again:
 		decode_err = ffmpeg_src_thread_join(src[QD_INPUT_MAIN]);
 		if (decode_err)
 			quit = 1;
+		else {
+			/* wait EOS */
+			if (ffmpeg_src_wait_eos(src[QD_INPUT_MAIN],
+						true, 2 * QD_SECOND))
+				err("failed to drain MAIN input");
+		}
 	}
 
 	for (int i = 0; i < QD_MAX_INPUTS; i++) {
@@ -607,16 +613,6 @@ again:
 		if (src[QD_INPUT_MAIN])
 			ffmpeg_src_thread_stop(src[i]);
 		ffmpeg_src_thread_join(src[i]);
-	}
-
-	if (src[QD_INPUT_MAIN] && !decode_err) {
-		struct ffmpeg_src *psrc = src[QD_INPUT_MAIN];
-
-		/* wait EOS */
-		for (int i = 0; i < psrc->n_streams; i++) {
-			qd_session_wait_eos(g_session,
-					    psrc->streams[i].input->id);
-		}
 	}
 
 	/* cleanup */

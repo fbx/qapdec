@@ -197,7 +197,8 @@ int qd_session_configure_outputs(struct qd_session *session,
 				 int num_outputs,
 				 const enum qd_output_id *outputs);
 void qd_session_set_dump_path(struct qd_session *session, const char *path);
-void qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id);
+bool qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id,
+			 int timeout_us);
 bool qd_session_get_eos(struct qd_session *session, enum qd_input_id input_id);
 void qd_session_terminate(struct qd_session *session);
 struct qd_output *qd_session_get_output(struct qd_session *session,
@@ -239,6 +240,8 @@ struct qd_input *ffmpeg_src_add_input(struct ffmpeg_src *src, int index,
 				      enum qd_input_id input_id);
 int ffmpeg_src_seek(struct ffmpeg_src *src, int64_t position_ms);
 int ffmpeg_src_read_frame(struct ffmpeg_src *src);
+int ffmpeg_src_wait_eos(struct ffmpeg_src *src, bool drain, int timeout_us);
+
 int ffmpeg_src_thread_start(struct ffmpeg_src *src);
 void ffmpeg_src_thread_stop(struct ffmpeg_src *src);
 int ffmpeg_src_thread_join(struct ffmpeg_src *src);

@@ -1607,6 +1607,9 @@ qd_input_destroy(struct qd_input *input)
 
 	pthread_cond_destroy(&input->cond);
 	pthread_mutex_destroy(&input->lock);
+
+	info("destroyed %s input", input->name);
+
 	free(input);
 }
 
@@ -2259,10 +2262,31 @@ ffmpeg_src_thread_join(struct ffmpeg_src *src)
 
 	pthread_join(src->tid, &ret);
 
-	for (int i = 0; i < src->n_streams; i++)
-		qd_input_stop(src->streams[i].input);
-
 	return (intptr_t)ret;
+}
+
+int
+ffmpeg_src_wait_eos(struct ffmpeg_src *src, bool drain, int timeout_us)
+{
+	for (int i = 0; i < src->n_streams; i++) {
+		if (drain) {
+			if (qd_input_send_eos(src->streams[i].input))
+				return -1;
+		} else {
+			if (qd_input_stop(src->streams[i].input))
+				return -1;
+		}
+	}
+
+	for (int i = 0; i < src->n_streams; i++) {
+		if (!qd_session_wait_eos(src->streams[i].input->session,
+					 src->streams[i].input->id,
+					 timeout_us))
+			return -1;
+		timeout_us = 0;
+	}
+
+	return 0;
 }
 
 int
@@ -2436,12 +2460,25 @@ qd_session_terminate(struct qd_session *session)
 	pthread_mutex_unlock(&session->lock);
 }
 
-void
-qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id)
+bool
+qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id,
+		    int timeout_us)
 {
+	struct timespec deadline;
+	bool done = false;
+
+	if (timeout_us > 0) {
+		clock_gettime(CLOCK_REALTIME, &deadline);
+		deadline.tv_nsec += (timeout_us % QD_SECOND) * 1000ULL;
+		if (deadline.tv_nsec > 1000000000ULL) {
+			deadline.tv_nsec -= 1000000000ULL;
+			deadline.tv_sec++;
+		}
+		deadline.tv_sec += timeout_us / QD_SECOND;
+	}
+
 	pthread_mutex_lock(&session->lock);
 	while (!session->terminated) {
-		bool done;
 		switch (input_id) {
 		case QD_INPUT_MAIN:
 		case QD_INPUT_MAIN2:
@@ -2456,10 +2493,23 @@ qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id)
 		if (done)
 			break;
 
+		if (timeout_us == 0)
+			break;
+
 		info(" in %s: wait eos", qd_input_id_to_str(input_id));
-		pthread_cond_wait(&session->cond, &session->lock);
+
+		if (timeout_us < 0) {
+			pthread_cond_wait(&session->cond, &session->lock);
+		} else {
+			if (pthread_cond_timedwait(&session->cond,
+						   &session->lock,
+						   &deadline))
+				break;
+		}
 	}
 	pthread_mutex_unlock(&session->lock);
+
+	return done;
 }
 
 bool
