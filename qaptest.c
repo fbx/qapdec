@@ -1952,6 +1952,12 @@ again:
 			break;
 		}
 
+		if (ctx->state == FLUSH2_INPUT_TONE2 && silence_size == 0) {
+			/* in the TONE2 state we don't except any silence
+			 * except at the end of the last frame */
+			assert_int(48, >, ctx->silent_frames);
+		}
+
 		/* feed left and right channel data */
 		for (size_t i = 0; i < size; i += frame_size) {
 			int16_t *frame = data + i;
@@ -1967,13 +1973,18 @@ again:
 				ctx->state = FLUSH2_INPUT_TONE2;
 			}
 
-			if (silent)
+			if (silent) {
 				ctx->silent_frames++;
-			else
+				if (ctx->silent_frames == 48)
+					info("output is now silent");
+			} else {
+				if (ctx->silent_frames > 48)
+					info("output is now noisy");
 				ctx->silent_frames = 0;
+			}
 
-			assert_int(48, >, ctx->silent_frames);
-			ctx->input_tone2_frames_rendered++;
+			if (ctx->silent_frames < 48)
+				ctx->input_tone2_frames_rendered++;
 
 			peak_analyzer_add_samples(&ctx->pa[0], frame + 0, 1);
 			peak_analyzer_add_samples(&ctx->pa[1], frame + 1, 1);
