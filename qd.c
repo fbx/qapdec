@@ -1366,8 +1366,17 @@ qd_input_flush(struct qd_input *input)
 
 	t = get_time();
 
+	pthread_mutex_lock(&input->lock);
+	input->flushing = true;
+	pthread_mutex_unlock(&input->lock);
+
 	ret = qap_module_cmd(input->module, QAP_MODULE_CMD_FLUSH,
 			     0, NULL, NULL, NULL);
+
+	pthread_mutex_lock(&input->lock);
+	input->flushing = false;
+	pthread_mutex_unlock(&input->lock);
+
 	if (ret) {
 		err("QAP_SESSION_CMD_FLUSH command failed");
 		return 1;
@@ -1906,6 +1915,7 @@ qd_input_write(struct qd_input *input, void *data, int size,
 		if (ret == -EAGAIN) {
 			dbg(" in: %s: wait, buffer is full", input->name);
 			assert(avail < qap_buffer.common_params.size ||
+			       input->flushing ||
 			       input->session->type != QAP_SESSION_MS12_OTT);
 			wait_buffer_available(input);
 		} else if (ret < 0) {

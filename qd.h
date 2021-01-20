@@ -120,6 +120,7 @@ struct qd_input {
 	bool buffer_full;
 	bool terminated;
 	bool blocked;
+	bool flushing;
 	enum qd_input_state state;
 	uint64_t start_time;
 	uint64_t state_change_time;
