@@ -1883,6 +1883,7 @@ qd_input_write(struct qd_input *input, void *data, int size,
 
 	while (!input->terminated && offset < size) {
 		uint64_t t;
+		uint32_t avail;
 
 		qap_buffer.common_params.offset = 0;
 		qap_buffer.common_params.data = data + offset;
@@ -1892,8 +1893,8 @@ qd_input_write(struct qd_input *input, void *data, int size,
 		    qap_buffer.common_params.size > input->buffer_size)
 			qap_buffer.common_params.size = input->buffer_size;
 
-		dbg(" in: %s: %u bytes available", input->name,
-		    qd_input_get_avail_buffer_size(input));
+		avail = qd_input_get_avail_buffer_size(input);
+		dbg(" in: %s: %u bytes available", input->name, avail);
 
 		pthread_mutex_lock(&input->lock);
 		input->buffer_full = true;
@@ -1904,6 +1905,8 @@ qd_input_write(struct qd_input *input, void *data, int size,
 		ret = qap_module_process(input->module, &qap_buffer);
 		if (ret == -EAGAIN) {
 			dbg(" in: %s: wait, buffer is full", input->name);
+			assert(avail < qap_buffer.common_params.size ||
+			       input->session->type != QAP_SESSION_MS12_OTT);
 			wait_buffer_available(input);
 		} else if (ret < 0) {
 			err("%s: qap_module_process error %d", input->name, ret);
