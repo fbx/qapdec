@@ -2324,7 +2324,7 @@ test_ms12_eos(const MunitParameter params[],
 		assert_not_null(ffmpeg_src_add_input(src1, 2, session,
 						     QD_INPUT_ASSOC));
 
-		if (!strcmp(v, "ddp")) {
+		if (session->type == QAP_SESSION_MS12_OTT && !strcmp(v, "ddp")) {
 			assert_not_null((src2 = ffmpeg_src_create(f, NULL)));
 			assert_not_null(ffmpeg_src_add_input(src2, 1, session,
 							     QD_INPUT_MAIN2));
@@ -2414,7 +2414,7 @@ static char *parm_ms12_states_eos[] = {
 };
 
 static MunitParameterEnum parms_ms12_eos[] = {
-	{ "t", parm_ms12_sessions_ott_only },
+	{ "t", parm_ms12_sessions_all },
 	{ "o", parm_ms12_outputs_pcm_stereo },
 	{ "f", parm_ms12_files_eos },
 	{ "s", parm_ms12_states_eos },
