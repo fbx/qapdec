@@ -171,7 +171,7 @@ peak_analyzer_run(struct peak_analyzer *pa,
 	fftw_execute(pa->plan);
 
 	n_samples = pa->n_samples / 2;
-	for (size_t i = 1; i < n_samples; i++) {
+	for (int i = 1; i < n_samples; i++) {
 		double sq, gain;
 		complex double di = pa->idata[i];
 
@@ -1666,7 +1666,7 @@ test_ms12_output_reconfig(const MunitParameter params[], void *user_data_or_fixt
 	assert_int(0, ==, ffmpeg_src_seek(src, 14000));
 	assert_int(0, ==, ffmpeg_src_thread_start(src));
 
-	for (int i = 0; i < QD_N_ELEMENTS(output_reconfig_sequence); i++) {
+	for (size_t i = 0; i < QD_N_ELEMENTS(output_reconfig_sequence); i++) {
 		enum qd_output_id *outputs = output_reconfig_sequence[i];
 		if (session->type == QAP_SESSION_MS12_OTT &&
 		    (outputs[0] == QD_OUTPUT_7DOT1 ||
@@ -1959,7 +1959,7 @@ again:
 		}
 
 		/* feed left and right channel data */
-		for (size_t i = 0; i < size; i += frame_size) {
+		for (int i = 0; i < size; i += frame_size) {
 			int16_t *frame = data + i;
 			bool silent = int16_is_silence(frame, 2);
 

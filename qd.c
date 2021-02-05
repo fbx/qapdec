@@ -128,14 +128,6 @@ qd_get_time(void)
 	return get_time() - qd_base_time;
 }
 
-uint64_t
-qd_get_real_time(void)
-{
-	struct timespec ts;
-	clock_gettime(CLOCK_REALTIME, &ts);
-	return ts.tv_sec * UINT64_C(1000000) + ts.tv_nsec / UINT64_C(1000);
-}
-
 static int
 mkdir_parents(const char *path, mode_t mode)
 {
@@ -1515,7 +1507,7 @@ qd_input_set_buffer_size(struct qd_input *input, uint32_t buffer_size)
 	return 0;
 }
 
-uint32_t
+static uint32_t
 qd_input_get_avail_buffer_size(struct qd_input *input)
 {
 	uint32_t buffer_size = 0;
@@ -1531,7 +1523,7 @@ qd_input_get_avail_buffer_size(struct qd_input *input)
 	return buffer_size;
 }
 
-uint64_t
+static uint64_t
 qd_input_get_output_frames(struct qd_input *input)
 {
 	uint64_t frames = 0;
@@ -1547,7 +1539,7 @@ qd_input_get_output_frames(struct qd_input *input)
 	return frames;
 }
 
-int
+static int
 qd_input_get_io_info(struct qd_input *input, qap_report_frames_t *report)
 {
 	int ret;
@@ -2408,7 +2400,7 @@ qd_session_set_kvpairs(struct qd_session *session, char *kvpairs_format, ...)
 	len = vsnprintf(buf, sizeof (buf), kvpairs_format, ap);
 	va_end(ap);
 
-	if (len < 0 || len >= sizeof (buf))
+	if (len < 0 || (unsigned int)len >= sizeof (buf))
 		return -1;
 
 	info("set kvpairs %s", buf);
@@ -2483,7 +2475,7 @@ qd_session_wait_eos(struct qd_session *session, enum qd_input_id input_id,
 	if (timeout_us > 0) {
 		clock_gettime(CLOCK_REALTIME, &deadline);
 		deadline.tv_nsec += (timeout_us % QD_SECOND) * 1000ULL;
-		if (deadline.tv_nsec > 1000000000ULL) {
+		if (deadline.tv_nsec > 1000000000LL) {
 			deadline.tv_nsec -= 1000000000ULL;
 			deadline.tv_sec++;
 		}

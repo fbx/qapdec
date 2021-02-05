@@ -116,7 +116,7 @@ struct qd_input {
 	qap_input_config_t config;
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
-	int buffer_size;
+	unsigned int buffer_size;
 	bool buffer_full;
 	bool terminated;
 	bool blocked;
