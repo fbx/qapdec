@@ -981,6 +981,15 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 	struct qd_output *output = qd_session_get_output(session, id);
 	uint64_t pts;
 
+	pthread_mutex_lock(&session->lock);
+	if (session->terminated) {
+		pthread_mutex_unlock(&session->lock);
+		dbg("out: %s: drop buffer size=%u, session terminated",
+		    output->name, buffer->common_params.size);
+		return;
+	}
+	pthread_mutex_unlock(&session->lock);
+
 	dbg("out: %s: pcm buffer size=%u pts=%" PRIu64
 	    " duration=%lu last_pts=%" PRIu64 " last_diff=%" PRIi64,
 	    output->name,
@@ -2458,10 +2467,12 @@ qd_session_terminate(struct qd_session *session)
 	if (!session)
 		return;
 
-	info("terminate session");
 	pthread_mutex_lock(&session->lock);
-	session->terminated = true;
-	pthread_cond_signal(&session->cond);
+	if (!session->terminated) {
+		info("terminate session");
+		session->terminated = true;
+		pthread_cond_signal(&session->cond);
+	}
 	pthread_mutex_unlock(&session->lock);
 }
 
@@ -2528,6 +2539,8 @@ qd_session_destroy(struct qd_session *session)
 {
 	if (!session)
 		return;
+
+	qd_session_terminate(session);
 
 	dbg("destroy session");
 
