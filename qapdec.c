@@ -327,7 +327,6 @@ int main(int argc, char **argv)
 	pthread_t kbd_tid;
 	AVStream *avstream;
 
-	qd_init();
 	qap_session_type = QAP_SESSION_BROADCAST;
 
 	while ((opt = getopt_long(argc, argv, "c:f:hik:l:o:p:s:t:v",
@@ -476,6 +475,8 @@ int main(int argc, char **argv)
 
 	if (optind + 1 < argc)
 		src_url[QD_INPUT_MAIN2] = argv[optind + 1];
+
+	qd_init();
 
 	if (kbd_enable)
 		kbd_enable = !pthread_create(&kbd_tid, NULL, kbd_thread, NULL);
