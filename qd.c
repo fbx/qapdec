@@ -65,6 +65,7 @@ struct qd_sw_decoder {
 
 static struct qd_module_handle qd_modules[QD_MAX_MODULES];
 static uint64_t qd_base_time;
+static int64_t qd_last_input_ts;
 
 #define WAV_SPEAKER_FRONT_LEFT			0x1
 #define WAV_SPEAKER_FRONT_RIGHT			0x2
@@ -984,6 +985,12 @@ update_output_ts(struct qd_output *output, int64_t timestamp)
 		    output->expected_ts - timestamp);
 		output->expected_ts = timestamp;
 	}
+
+	if (qd_last_input_ts != AV_NOPTS_VALUE) {
+		dbg("out: %s: delta with input: %" PRId64 "ms",
+		    output->name,
+		    (qd_last_input_ts - timestamp) / QD_MSECOND);
+	}
 }
 
 static void
@@ -1877,6 +1884,9 @@ qd_input_write(struct qd_input *input, void *data, int size,
 	if (input->written_bytes == 0)
 		input->start_time = qd_get_time();
 
+	if (input->id == QD_INPUT_MAIN)
+		qd_last_input_ts = pts;
+
 	memset(&qap_buffer, 0, sizeof (qap_buffer));
 
 	/* XXX: don't use timestamps in OTT mode, otherwise dual decode and
@@ -1893,7 +1903,8 @@ qd_input_write(struct qd_input *input, void *data, int size,
 	}
 
 	dbg(" in: %s: buffer size=%d pts=%" PRIi64 " -> %" PRIi64,
-	    input->name, size, pts, qap_buffer.common_params.timestamp);
+	    input->name, size, pts == AV_NOPTS_VALUE ? -1 : pts,
+	    qap_buffer.common_params.timestamp);
 
 	assert(size <= 24 * 1024);
 
