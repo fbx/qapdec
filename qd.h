@@ -206,6 +206,7 @@ struct qd_output *qd_session_get_output(struct qd_session *session,
 					enum qd_output_id id);
 void qd_session_set_output_cb(struct qd_session *session, qd_output_func_t func,
 			      void *userdata);
+bool qd_session_uses_timestamps(struct qd_session *session);
 
 int qd_input_start(struct qd_input *input);
 int qd_input_pause(struct qd_input *input);
