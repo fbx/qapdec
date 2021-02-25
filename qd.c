@@ -2025,11 +2025,12 @@ ffmpeg_src_create(const char *url, const char *format)
 		goto fail;
 	}
 
-	ret = avformat_find_stream_info(src->avctx, NULL);
-	if (ret < 0) {
-		av_err(ret, "failed to get streams info");
-		goto fail;
+	if (getenv("QD_NOPARSE")) {
+		src->avctx->flags |= (AVFMT_FLAG_NOFILLIN |
+				      AVFMT_FLAG_NOPARSE);
 	}
+
+	avformat_find_stream_info(src->avctx, NULL);
 
 	return src;
 
@@ -2045,17 +2046,87 @@ ffmpeg_src_get_duration(struct ffmpeg_src *src)
 	return av_rescale_q(src->avctx->duration, AV_TIME_BASE_Q, qap_timebase);
 }
 
+/*
+ * Adapted from ffmpeg source but without requiring the audio channels and
+ * samplerate to be known.
+ */
+static int
+find_best_stream(AVFormatContext *ic, enum AVMediaType type,
+		 int wanted_stream_nb, int related_stream)
+{
+	unsigned int i, nb_streams = ic->nb_streams;
+	int ret = AVERROR_STREAM_NOT_FOUND;
+	int best_count = -1, best_multiframe = -1, best_disposition = -1;
+	int count, multiframe, disposition;
+	int64_t best_bitrate = -1;
+	int64_t bitrate;
+	unsigned *program = NULL;
+
+	if (related_stream >= 0 && wanted_stream_nb < 0) {
+		AVProgram *p = av_find_program_from_stream(ic, NULL,
+							   related_stream);
+		if (p) {
+			program = p->stream_index;
+			nb_streams = p->nb_stream_indexes;
+		}
+	}
+
+	for (i = 0; i < nb_streams; i++) {
+		int real_stream_index = program ? program[i] : i;
+		AVStream *st = ic->streams[real_stream_index];
+		AVCodecParameters *par = st->codecpar;
+
+		if (par->codec_type != type)
+			continue;
+
+		if (wanted_stream_nb >= 0 &&
+		    real_stream_index != wanted_stream_nb)
+			continue;
+
+		disposition = !(st->disposition &
+				(AV_DISPOSITION_HEARING_IMPAIRED |
+				 AV_DISPOSITION_VISUAL_IMPAIRED))
+			+ !! (st->disposition & AV_DISPOSITION_DEFAULT);
+		count = st->codec_info_nb_frames;
+		bitrate = par->bit_rate;
+		multiframe = FFMIN(5, count);
+
+		if ((best_disposition >  disposition) ||
+		    (best_disposition == disposition &&
+		     best_multiframe >  multiframe) ||
+		    (best_disposition == disposition &&
+		     best_multiframe == multiframe &&
+		     best_bitrate >  bitrate) ||
+		    (best_disposition == disposition &&
+		     best_multiframe == multiframe &&
+		     best_bitrate == bitrate &&
+		     best_count >= count))
+			continue;
+
+		best_disposition = disposition;
+		best_count = count;
+		best_bitrate = bitrate;
+		best_multiframe = multiframe;
+		ret = real_stream_index;
+
+		if (program && i == nb_streams - 1 && ret < 0) {
+			program = NULL;
+			nb_streams = ic->nb_streams;
+			/* no related stream found, try with everything */
+			i = 0;
+		}
+	}
+
+	return ret;
+}
+
+
 AVStream *
 ffmpeg_src_get_avstream(struct ffmpeg_src *src, int index)
 {
-	if (index < 0) {
-		index = av_find_best_stream(src->avctx, AVMEDIA_TYPE_AUDIO,
-					    -1, -1, NULL, 0);
-		if (index < 0)
-			return NULL;
-	}
-
-	if ((unsigned int)index >= src->avctx->nb_streams)
+	index = find_best_stream(src->avctx, AVMEDIA_TYPE_AUDIO,
+				 index, -1);
+	if (index < 0)
 		return NULL;
 
 	return src->avctx->streams[index];
