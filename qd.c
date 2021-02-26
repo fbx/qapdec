@@ -975,41 +975,40 @@ handle_encoded_buffer(struct qd_output *output, qap_audio_buffer_t *buffer)
 }
 
 static void
-handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
+handle_buffer(struct qd_session *session, qap_audio_buffer_t *abuffer)
 {
-	int id = buffer->buffer_parms.output_buf_params.output_id;
+	int id = abuffer->buffer_parms.output_buf_params.output_id;
 	struct qd_output *output = qd_session_get_output(session, id);
+	qap_buffer_common_t *buffer = &abuffer->common_params;
 	uint64_t pts;
 
 	pthread_mutex_lock(&session->lock);
 	if (session->terminated) {
 		pthread_mutex_unlock(&session->lock);
 		dbg("out: %s: drop buffer size=%u, session terminated",
-		    output->name, buffer->common_params.size);
+		    output->name, buffer->size);
 		return;
 	}
 	pthread_mutex_unlock(&session->lock);
 
 	dbg("out: %s: pcm buffer size=%u pts=%" PRIu64
 	    " duration=%lu last_pts=%" PRIu64 " last_diff=%" PRIi64,
-	    output->name,
-	    buffer->common_params.size, buffer->common_params.timestamp,
-	    buffer->common_params.size * 1000000UL /
+	    output->name, buffer->size, buffer->timestamp,
+	    buffer->size * 1000000UL /
 	    (output->config.channels * output->config.bit_width / 8) /
 	    output->config.sample_rate,
-	    output->last_ts,
-	    buffer->common_params.timestamp - output->last_ts);
+	    output->last_ts, buffer->timestamp - output->last_ts);
 
 	if (qd_format_is_pcm(output->config.format)) {
-		output->total_frames += buffer->common_params.size /
+		output->total_frames += buffer->size /
 			(output->config.bit_width / 8 *
 			 output->config.channels);
 	} else {
 		output->total_frames++;
 	}
 
-	output->last_ts = buffer->common_params.timestamp;
-	output->total_bytes += buffer->common_params.size;
+	output->last_ts = buffer->timestamp;
+	output->total_bytes += buffer->size;
 
 	if (qd_format_is_pcm(output->config.format)) {
 		pts = output->total_frames * 1000000 /
@@ -1042,7 +1041,7 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 	}
 
 	if (output->id == QD_OUTPUT_AC3 || output->id == QD_OUTPUT_EAC3)
-		handle_encoded_buffer(output, buffer);
+		handle_encoded_buffer(output, abuffer);
 
 	if (pts <= session->output_discard_ms * 1000) {
 		dbg("out: %s: discard buffer at pos %" PRIu64 "ms",
@@ -1053,10 +1052,10 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *buffer)
 	dbg("out: %s: render buffer, output time=%" PRIu64, output->name,
 	    output->pts);
 
-	output_write_buffer(output, &buffer->common_params);
+	output_write_buffer(output, buffer);
 
 	if (session->output_cb_func) {
-		session->output_cb_func(output, buffer,
+		session->output_cb_func(output, abuffer,
 					session->output_cb_data);
 	}
 
