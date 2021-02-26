@@ -975,12 +975,25 @@ handle_encoded_buffer(struct qd_output *output, qap_audio_buffer_t *buffer)
 }
 
 static void
+update_output_ts(struct qd_output *output, int64_t timestamp)
+{
+	if ((timestamp < output->expected_ts - 1 ||
+	     timestamp > output->expected_ts + 1)) {
+		err("out: %s: pts=%" PRIu64 " does not match expected pts=%" PRId64 " (%" PRId64 " us diff), reset",
+		    output->name, timestamp, output->expected_ts,
+		    output->expected_ts - timestamp);
+		output->expected_ts = timestamp;
+	}
+}
+
+static void
 handle_buffer(struct qd_session *session, qap_audio_buffer_t *abuffer)
 {
 	int id = abuffer->buffer_parms.output_buf_params.output_id;
 	struct qd_output *output = qd_session_get_output(session, id);
 	qap_buffer_common_t *buffer = &abuffer->common_params;
-	uint64_t pts;
+	int duration;
+	int frames;
 
 	pthread_mutex_lock(&session->lock);
 	if (session->terminated) {
@@ -991,36 +1004,29 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *abuffer)
 	}
 	pthread_mutex_unlock(&session->lock);
 
-	dbg("out: %s: pcm buffer size=%u pts=%" PRIu64
-	    " duration=%lu last_pts=%" PRIu64 " last_diff=%" PRIi64,
-	    output->name, buffer->size, buffer->timestamp,
-	    buffer->size * 1000000UL /
-	    (output->config.channels * output->config.bit_width / 8) /
-	    output->config.sample_rate,
-	    output->last_ts, buffer->timestamp - output->last_ts);
-
 	if (qd_format_is_pcm(output->config.format)) {
-		output->total_frames += buffer->size /
-			(output->config.bit_width / 8 *
-			 output->config.channels);
-	} else {
-		output->total_frames++;
-	}
-
-	output->last_ts = buffer->timestamp;
-	output->total_bytes += buffer->size;
-
-	if (qd_format_is_pcm(output->config.format)) {
-		pts = output->total_frames * 1000000 /
+		output->pts = output->total_frames * 1000000 /
+			output->config.sample_rate;
+		frames = buffer->size / (output->config.bit_width / 8 *
+					 output->config.channels);
+		duration = frames * 1000000 /
 			output->config.sample_rate;
 	} else if (output->config.format == QAP_AUDIO_FORMAT_AC3 ||
 		   output->config.format == QAP_AUDIO_FORMAT_EAC3) {
 		/* Dolby encoder always outputs 32ms frames */
-		pts = output->total_frames * 32000;
+		output->pts = output->total_frames * 32000;
+		frames = 1;
+		duration = 32000;
 	} else {
-		err("unsupported output format");
+		err("out: %s: unsupported output format", output->name);
 		return;
 	}
+
+	dbg("out: %s: pcm buffer size=%u pts=%" PRIu64 " duration=%d",
+	    output->name, buffer->size, buffer->timestamp, duration);
+
+	if (qd_session_uses_timestamps(session))
+		update_output_ts(output, buffer->timestamp);
 
 	if (session->realtime &&
 	    output == qd_session_get_primary_output(session)) {
@@ -1028,7 +1034,7 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *abuffer)
 		int64_t delay;
 
 		now = qd_get_time() - output->start_time;
-		delay = pts - now;
+		delay = output->pts - now;
 
 		if (delay <= 0) {
 			dbg("out: %s: buffer late by %" PRIi64 "us",
@@ -1043,10 +1049,10 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *abuffer)
 	if (output->id == QD_OUTPUT_AC3 || output->id == QD_OUTPUT_EAC3)
 		handle_encoded_buffer(output, abuffer);
 
-	if (pts <= session->output_discard_ms * 1000) {
+	if (output->pts + duration < session->output_discard_ms * 1000) {
 		dbg("out: %s: discard buffer at pos %" PRIu64 "ms",
-		    output->name, pts / 1000);
-		return;
+		    output->name, output->pts / 1000);
+		goto out;
 	}
 
 	dbg("out: %s: render buffer, output time=%" PRIu64, output->name,
@@ -1059,7 +1065,10 @@ handle_buffer(struct qd_session *session, qap_audio_buffer_t *abuffer)
 					session->output_cb_data);
 	}
 
-	output->pts = pts;
+out:
+	output->total_frames += frames;
+	output->total_bytes += buffer->size;
+	output->expected_ts += duration;
 }
 
 static void

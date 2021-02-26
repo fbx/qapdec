@@ -82,8 +82,8 @@ struct qd_output {
 	int wav_channel_count;
 	int wav_channel_offset[QAP_AUDIO_MAX_CHANNELS];
 	uint64_t start_time;
-	uint64_t last_ts;
-	uint64_t pts;
+	int64_t pts;
+	int64_t expected_ts;
 	uint64_t total_bytes;
 	uint64_t total_frames;
 	FILE *stream;
