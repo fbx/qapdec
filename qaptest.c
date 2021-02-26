@@ -2269,6 +2269,7 @@ test_ms12_flush3(const MunitParameter params[],
 	assert_int(0, ==, qd_input_start(input));
 
 	/* kickstart the pipeline with a silence frame */
+	assert_int(0, ==, ffmpeg_src_seek(src, 0));
 	assert_int(0, <, ffmpeg_src_read_frame(src));
 
 	usleep(200000);
